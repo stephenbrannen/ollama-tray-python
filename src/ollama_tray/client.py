@@ -8,6 +8,7 @@ from typing import TypedDict
 from urllib.parse import urlsplit
 
 import requests
+from urllib3.exceptions import HTTPError as Urllib3Error
 
 DEFAULT_HOST = "http://127.0.0.1:11434"
 DEFAULT_PORT = 11434
@@ -132,6 +133,8 @@ class OllamaClient:
                         raise OllamaUnavailable("response body is too large")
                     if time.monotonic() > deadline:
                         raise OllamaUnavailable("response took too long")
-        except requests.RequestException as error:
+        # Reading `response.raw` directly bypasses `requests`, so a dropped connection or a read
+        # timeout surfaces as a urllib3 or socket error instead of a `RequestException`.
+        except (requests.RequestException, Urllib3Error, OSError) as error:
             raise OllamaUnavailable(str(error)) from error
         return bytes(body)

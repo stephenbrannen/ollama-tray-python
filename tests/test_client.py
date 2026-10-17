@@ -41,6 +41,11 @@ class _Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return
         self.send_response(200)
+        if server.mode == "truncated":
+            self.send_header("Content-Length", "100")
+            self.end_headers()
+            self.wfile.write(b"{}")
+            return
         self.end_headers()
         try:
             if server.mode == "trickle":
@@ -263,3 +268,12 @@ def test_loaded_models_does_not_follow_redirects(loopback: LoopbackServer) -> No
         OllamaClient(loopback.url).loaded_models()
 
     assert loopback.paths == ["/api/ps"]
+
+
+def test_loaded_models_raises_unavailable_when_server_closes_mid_body(
+    loopback: LoopbackServer,
+) -> None:
+    loopback.mode = "truncated"
+
+    with raises(OllamaUnavailable):
+        OllamaClient(loopback.url).loaded_models()
