@@ -43,15 +43,21 @@ class OllamaClient:
         self._session = requests.Session()
 
     def loaded_models(self) -> list[LoadedModel]:
-        body: dict[str, list[dict[str, str | int]]] = self._request("GET", "/api/ps").json()
-        return [
-            LoadedModel(
-                name=str(entry["name"]),
-                size_vram=int(entry["size_vram"]),
-                expires_at=datetime.fromisoformat(str(entry["expires_at"])),
-            )
-            for entry in body.get("models", [])
-        ]
+        response = self._request("GET", "/api/ps")
+        try:
+            body: dict[str, list[dict[str, str | int]]] = response.json()
+            return [
+                LoadedModel(
+                    name=str(entry["name"]),
+                    size_vram=int(entry["size_vram"]),
+                    expires_at=datetime.fromisoformat(str(entry["expires_at"])),
+                )
+                for entry in body["models"]
+            ]
+        except (ValueError, KeyError, TypeError) as error:
+            # A 200 that is not Ollama's payload (a proxy error page, say) is as unusable to
+            # the tray as an unreachable server, so callers get the same single failure.
+            raise OllamaUnavailable(f"unexpected /api/ps response: {error}") from error
 
     def unload(self, name: str) -> None:
         # Ollama evicts a model as soon as its keep-alive is zero. `ollama stop` does the same.

@@ -133,6 +133,20 @@ def test_loaded_models_raises_unavailable(
         client.loaded_models()
 
 
+@mark.parametrize(
+    "body",
+    ["<html>bad gateway</html>", '{"error": "nope"}', '{"models": [{"name": "llama3:8b"}]}'],
+    ids=["not-json", "missing-models-key", "missing-model-field"],
+)
+def test_loaded_models_raises_unavailable_on_unexpected_payload(
+    client: OllamaClient, responses: RequestsMock, body: str
+) -> None:
+    responses.get(f"{BASE_URL}/api/ps", body=body)
+
+    with raises(OllamaUnavailable):
+        client.loaded_models()
+
+
 def test_unload_posts_keep_alive_zero(client: OllamaClient, responses: RequestsMock) -> None:
     responses.post(
         f"{BASE_URL}/api/generate",
