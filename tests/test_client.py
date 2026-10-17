@@ -25,8 +25,8 @@ def client() -> OllamaClient:
 @mark.parametrize(
     ("flag", "env", "expected"),
     [
-        (None, None, "http://localhost:11434"),
-        (None, "", "http://localhost:11434"),
+        (None, None, "http://127.0.0.1:11434"),
+        (None, "", "http://127.0.0.1:11434"),
         (None, "gpu-box", "http://gpu-box:11434"),
         (None, "gpu-box:8080", "http://gpu-box:8080"),
         (None, "https://gpu-box", "https://gpu-box:11434"),
@@ -34,6 +34,11 @@ def client() -> OllamaClient:
         (None, "http://gpu-box:8080/", "http://gpu-box:8080"),
         (None, "0.0.0.0", "http://0.0.0.0:11434"),
         (None, "[::1]:9000", "http://[::1]:9000"),
+        (None, "http://box:8080/ollama/", "http://box:8080/ollama"),
+        (None, "box/ollama", "http://box:11434/ollama"),
+        (None, ":8080", "http://127.0.0.1:8080"),
+        (None, "box:abc", ValueError),
+        (None, "box:70000", ValueError),
         ("flag-box:1", "env-box:2", "http://flag-box:1"),
         ("", "env-box:2", "http://env-box:2"),
     ],
@@ -45,6 +50,11 @@ def client() -> OllamaClient:
         "env-scheme-only",
         "env-scheme-and-port",
         "trailing-slash",
+        "path-kept-trailing-slash-dropped",
+        "path-with-default-port",
+        "port-only",
+        "non-numeric-port",
+        "out-of-range-port",
         "wildcard-address",
         "ipv6-with-port",
         "flag-beats-env",
@@ -52,14 +62,18 @@ def client() -> OllamaClient:
     ],
 )
 def test_resolve_host(
-    monkeypatch: MonkeyPatch, flag: str | None, env: str | None, expected: str
+    monkeypatch: MonkeyPatch, flag: str | None, env: str | None, expected: str | type[ValueError]
 ) -> None:
     if env is None:
         monkeypatch.delenv("OLLAMA_HOST", raising=False)
     else:
         monkeypatch.setenv("OLLAMA_HOST", env)
 
-    assert resolve_host(flag) == expected
+    if isinstance(expected, str):
+        assert resolve_host(flag) == expected
+    else:
+        with raises(expected):
+            resolve_host(flag)
 
 
 @mark.parametrize(
