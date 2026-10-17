@@ -115,6 +115,24 @@ Or add it to a flake-based system configuration:
 * `nix flake update` refreshes the pinned nixpkgs.
 * GNOME needs the AppIndicator extension to show tray icons.
 
+## Install from a release
+
+Each tagged release has a source archive (`ollama_tray-<version>.tar.gz`), a wheel (`ollama_tray-<version>-py3-none-any.whl`) and a `checksums.txt`. The wheel needs Python 3.13 or newer and installs PySide6 from PyPI.
+
+* Download the wheel and `checksums.txt` from the Releases page, or with `gh release download <tag> -R stephenbrannen/ollama-tray-python -p '*.whl' -p checksums.txt`.
+* Verify it with `sha256sum -c checksums.txt --ignore-missing`.
+* Verify its build provenance with `gh attestation verify <wheel> -R stephenbrannen/ollama-tray-python`. This proves the file came from this repository's release workflow. Releases get an attestation only while the repository is public.
+* Install it with `uv tool install ./ollama_tray-<version>-py3-none-any.whl`, or with `pipx install ./ollama_tray-<version>-py3-none-any.whl`.
+* Copy `ollama-tray.desktop` from the source archive to `~/.config/autostart/` to start the tray on login. It runs `ollama-tray` from your `PATH`.
+* While the repository is private, only collaborators can download releases.
+
+### Withdraw a bad release
+
+* Delete the release and its tag with `gh release delete <tag> --cleanup-tag -R stephenbrannen/ollama-tray-python`.
+* Fix the problem on `main`, then tag a patch version (for example `v0.2.1`). Do not reuse the deleted tag.
+
+The release workflow runs the tests, refuses a tag that does not match the `pyproject.toml` version, and refuses a tag whose commit is not on `main`.
+
 ## Autostart
 
 The entry runs `ollama-tray` from `PATH`, so install the package first (for example with `environment.systemPackages`). Then link the entry from your profile into `~/.config/autostart/`. The profile path is stable across upgrades and garbage collection, unlike a store path.
