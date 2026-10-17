@@ -96,6 +96,7 @@ def menu_label_text(text: str) -> str:
 
 
 def escape_lines(text: str) -> str:
+    """Escape each line of server-supplied text and keep the line breaks."""
     return "\n".join(escape_line(line) for line in text.splitlines())
 
 

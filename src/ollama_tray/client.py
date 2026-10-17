@@ -103,8 +103,13 @@ class OllamaClient:
         self._session = requests.Session()
 
     def loaded_models(self) -> list[LoadedModel]:
+        """Return the models Ollama has loaded, or raise `OllamaUnavailable`.
+
+        The payload is untrusted JSON, so any shape other than Ollama's counts as a failure.
+        """
         raw = self._request("GET", "/api/ps", STATUS_TIMEOUT_SECONDS)
         try:
+            # The annotation is not checked here. The handler below catches a wrong shape.
             body: _PsPayload = json.loads(raw)
             return [
                 LoadedModel(
@@ -115,8 +120,8 @@ class OllamaClient:
                 for entry in body["models"]
             ]
         except (ValueError, KeyError, TypeError) as error:
-            # A 200 that is not Ollama's payload (a proxy error page, say) is as unusable to
-            # the tray as an unreachable server, so callers get the same single failure.
+            # A 200 that is not Ollama's payload (a proxy error page, say) is unusable. The tray
+            # treats it like an unreachable server, so callers get the same single failure.
             raise OllamaUnavailable(f"unexpected /api/ps response: {error}") from error
 
     def unload(self, name: str) -> None:
@@ -147,8 +152,8 @@ class OllamaClient:
     ) -> bytes:
         """Return the response body, or raise `OllamaUnavailable`.
 
-        The `requests` timeout limits each socket wait, not the whole request, so a server
-        that sends one byte at a time could hold the call open forever. Once the headers
+        The `requests` timeout limits each socket wait, not the whole request. A server that
+        sends one byte at a time could hold the call open forever. Once the headers
         arrive, the body is read in chunks against a deadline and capped in size. The deadline
         is checked between chunks, so a stalled read can overrun it by one socket timeout.
         """
@@ -175,8 +180,8 @@ class OllamaClient:
                         raise OllamaUnavailable("response body is too large")
                     if time.monotonic() > deadline:
                         raise OllamaUnavailable("response took too long")
-        # Reading `response.raw` directly bypasses `requests`, so a dropped connection or a read
-        # timeout surfaces as a urllib3 or socket error instead of a `RequestException`.
+        # Reading `response.raw` directly bypasses `requests`. A dropped connection or a read
+        # timeout then surfaces as a urllib3 or socket error, not a `RequestException`.
         except (requests.RequestException, Urllib3Error, OSError) as error:
             raise OllamaUnavailable(str(error)) from error
         return bytes(body)

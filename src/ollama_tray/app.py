@@ -77,6 +77,11 @@ class MenuActions:
 def populate_menu(
     menu: QMenu, models: list[LoadedModel], keepable: list[str], actions: MenuActions
 ) -> None:
+    """Rebuild `menu` in place from the loaded models.
+
+    Every rebuild clears the menu and connects a fresh lambda to each entry. The lambda binds
+    its model name when it is made, so each entry acts on its own model.
+    """
     # The submenu is a child of `menu`, and `clear` does not delete it, so every rebuild would
     # leak one.
     for old_submenu in menu.findChildren(QMenu, options=Qt.FindChildOption.FindDirectChildrenOnly):
@@ -122,6 +127,12 @@ class _KeepSignals(QObject):
 
 
 class TrayController(QObject):
+    """Own the tray icon, its menu and the poll loop.
+
+    All client calls run on one worker thread. The worker reports back through signals, so the
+    GUI thread is the only one that changes the icon, the tooltip and the menu.
+    """
+
     def __init__(
         self,
         client: OllamaClient,
@@ -155,16 +166,16 @@ class TrayController(QObject):
         # A `QPixmap` needs the application to exist, so the icons are drawn here, not at import.
         self._icons = {status: draw_icon(status) for status in TrayStatus}
 
-        # The client's `requests.Session` is not guaranteed thread-safe, so one worker thread
-        # makes every client call (poll, stop and keep loaded) run one at a time.
+        # The client's `requests.Session` is not guaranteed thread-safe. One worker thread makes
+        # every client call (poll, stop and keep loaded), so calls run one at a time.
         self._jobs: queue.Queue[Callable[[], None] | None] = queue.Queue()
         # A daemon thread cannot hold the process open while it waits on a hung server. Qt's
         # `QThreadPool` joins its threads on exit, which delayed quitting by 10 s.
         self._worker = threading.Thread(target=self._work, name="ollama-client", daemon=True)
         self._worker.start()
 
-        # Signals are emitted on the worker thread. The receiving slots live on this object,
-        # so Qt queues them onto the GUI thread, which is the only place widgets are touched.
+        # Signals are emitted on the worker thread. The receiving slots live on this object, so
+        # Qt queues them onto the GUI thread. Only the GUI thread may touch widgets.
         self._poll_signals = _PollSignals(self)
         self._poll_signals.started.connect(self._on_poll_started)
         self._poll_signals.succeeded.connect(self._on_poll_succeeded)
@@ -202,8 +213,8 @@ class TrayController(QObject):
     def shutdown(self) -> None:
         """Stop all work without waiting on the server.
 
-        A call that is already in flight ends on its own deadline, and the worker thread is
-        not joined here, so a hung server cannot delay quitting.
+        A call that is already in flight ends on its own deadline. The worker thread is not
+        joined here, so a hung server cannot delay quitting.
         """
         self._shutting_down.set()
         self._timer.stop()
@@ -218,10 +229,10 @@ class TrayController(QObject):
 
     def _work(self) -> None:
         while (job := self._jobs.get()) is not None:
-            # A job that raises must not end this thread, or every later poll and stop would
-            # wait in the queue forever and the icon would freeze.
             try:
                 job()
+            # A job that raises must not end this thread. Every later poll and stop would then
+            # wait in the queue forever, and the icon would freeze.
             except Exception:
                 logger.exception("Worker job failed")
 
@@ -235,13 +246,13 @@ class TrayController(QObject):
 
     def _poll(self) -> None:
         # The watchdog times the call, not the queue wait. A poll can queue behind a stop that
-        # takes several unload timeouts, and a healthy server must not show as not responding.
+        # takes several unload timeouts. A healthy server must not show as not responding.
         self._poll_signals.started.emit()
         try:
             models = self._client.loaded_models()
+        # Catch everything, not only `OllamaUnavailable`. A failure that emits no signal leaves
+        # the in-flight flag set, and every later poll is then skipped.
         except Exception as error:
-            # Catch everything, not only `OllamaUnavailable`. A failure that emits no signal
-            # leaves the controller's in-flight flag set, and every later poll is then skipped.
             self._poll_signals.failed.emit(str(error))
         else:
             self._poll_signals.succeeded.emit(models)
@@ -263,8 +274,8 @@ class TrayController(QObject):
                     return
                 try:
                     self._client.unload(name)
-                # Catch everything, not only `OllamaUnavailable`, so one model's failure does
-                # not skip the models after it or end the worker thread.
+                # Catch everything, not only `OllamaUnavailable`. One model's failure must not
+                # skip the models after it or end the worker thread.
                 except Exception as error:
                     logger.warning("Could not stop %s: %s", shorten(name), shorten(str(error)))
                     failures.append(f"{name}: {error}")
@@ -327,8 +338,8 @@ class TrayController(QObject):
     def _rebuild_menu_if_changed(self, models: list[LoadedModel]) -> None:
         now = utc_now()
         keepable = [model.name for model in models if not is_kept_loaded(model.expires_at, now)]
-        # A model that becomes kept loaded keeps its name, so the names alone cannot tell that
-        # its Keep loaded entry must go.
+        # A model that becomes kept loaded keeps its name. The names alone cannot show that its
+        # Keep loaded entry must go.
         key = (tuple(model.name for model in models), tuple(keepable))
         if key == self._menu_key:
             self._menu_rebuild_pending = False
@@ -419,8 +430,8 @@ class TrayController(QObject):
         self._poll_after_change()
 
     def _poll_after_change(self) -> None:
-        # A poll that started before the change finished can still report the old state, so a
-        # poll in flight is followed by one more instead of being trusted.
+        # A poll that started before the change finished can still report the old state. So a
+        # poll in flight is followed by one more, not trusted.
         if self._poll_in_flight:
             self._poll_again = True
         else:
