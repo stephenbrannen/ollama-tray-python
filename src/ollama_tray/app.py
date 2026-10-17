@@ -96,7 +96,19 @@ class _StopSignals(QObject):
 
 
 class TrayController(QObject):
-    def __init__(self, client: OllamaClient, host: str, interval_seconds: float) -> None:
+    def __init__(
+        self,
+        client: OllamaClient,
+        host: str,
+        interval_seconds: float,
+        tray: QSystemTrayIcon | None = None,
+        menu: QMenu | None = None,
+    ) -> None:
+        """Build the controller. A test passes its own `tray` and `menu` to observe them.
+
+        A `QSystemTrayIcon` and a `QMenu` need the application to exist, so the defaults are
+        created here, not in the signature.
+        """
         super().__init__()
         self._client = client
         self._host = host
@@ -134,10 +146,10 @@ class TrayController(QObject):
         self._stop_signals.failed.connect(self._on_stop_failed)
         self._stop_signals.finished.connect(self._on_stop_finished)
 
-        self._menu = QMenu()
+        self._menu = menu if menu is not None else QMenu()
         self._menu.aboutToShow.connect(self._on_menu_shown)
         self._menu.aboutToHide.connect(self._on_menu_hidden)
-        self._tray = QSystemTrayIcon()
+        self._tray = tray if tray is not None else QSystemTrayIcon()
         self._tray.setContextMenu(self._menu)
         self._timer = QTimer(self)
         self._timer.setInterval(round(interval_seconds * 1000))
@@ -147,6 +159,10 @@ class TrayController(QObject):
         self._watchdog.setInterval((STATUS_TIMEOUT_SECONDS + POLL_WATCHDOG_MARGIN_SECONDS) * 1000)
         self._watchdog.timeout.connect(self._on_poll_stalled)
         self.apply_result(None)
+
+    @property
+    def worker_thread(self) -> threading.Thread:
+        return self._worker
 
     def start(self) -> None:
         self._tray.show()

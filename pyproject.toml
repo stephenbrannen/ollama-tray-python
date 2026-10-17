@@ -19,6 +19,7 @@ dev = [
     "responses>=0.26",
     "ruff>=0.17",
     "pyrefly>=1.3",
+    "pytest-cov>=7.1.0",
 ]
 
 [build-system]
@@ -37,6 +38,12 @@ select = ["E4", "E7", "E9", "F", "I", "UP", "B", "SIM", "C4"]
 
 [tool.pyrefly]
 project-includes = ["src", "tests"]
+# Tests import the shared fixtures as `tests.fixtures`, so the repository root must resolve.
+search-path = ["."]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The coverage gate lives in CI only. The Nix build runs pytest with this config, and the Nix
+# sandbox has no `pytest-cov`, so a `--cov` option here fails that build.
+addopts = "--strict-markers --strict-config"
+filterwarnings = ["error"]
