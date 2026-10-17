@@ -3,10 +3,11 @@ FROM ghcr.io/astral-sh/uv:0.13.1@sha256:4a1f3666816dafadd20ceb71eac9a7d56d7ef302
 
 FROM python:3.13.16-slim-trixie@sha256:70729b46c69b4f1e97c4822c1af3df53a1476cf5ddc6c087c0c10bc3a5678c2f
 
+# `socat` is the proxy the tray talks through, so a test can cut the connection.
 # PySide6 loads the first group at import. Qt's xcb platform plugin needs the libxcb group.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        xvfb xauth dbus \
+        xvfb xauth dbus socat \
         libegl1 libgl1 libglib2.0-0t64 libxkbcommon0 libfontconfig1 libdbus-1-3 \
         libx11-xcb1 libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
         libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1 libxkbcommon-x11-0 \

@@ -4,8 +4,6 @@ name: ollama-tray-e2e
 services:
   ollama:
     image: ollama/ollama:0.40.5@sha256:5d3a2f25f9825628daba94dc0b1d421c7d57d6c03ae5faa9ba050e058bab8241
-    # The driver stops this container by name to show the tray turning unreachable.
-    container_name: ollama-tray-e2e-ollama
     volumes:
       # Keeps the pulled model between local runs.
       - models:/root/.ollama
@@ -26,11 +24,7 @@ services:
         condition: service_healthy
     environment:
       OLLAMA_URL: http://ollama:11434
-      OLLAMA_CONTAINER: ollama-tray-e2e-ollama
       E2E_MODEL: smollm2:135m
-    volumes:
-      # Only used to stop the Ollama container. The driver sends no other Docker API call.
-      - /var/run/docker.sock:/var/run/docker.sock
 
 volumes:
   models:

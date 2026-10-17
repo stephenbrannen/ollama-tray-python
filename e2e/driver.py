@@ -1,13 +1,15 @@
-"""Clients the end-to-end test uses: the tray over D-Bus, Ollama over HTTP, and Docker."""
+"""Clients the end-to-end test uses: the tray over D-Bus and Ollama over HTTP."""
 
-import http.client
+import contextlib
 import json
+import os
+import signal
 import socket
+import subprocess
 import time
 import urllib.request
 from collections.abc import Callable
 from typing import NamedTuple, TypedDict
-from urllib.parse import quote
 
 from jeepney import DBusAddress, new_method_call
 from jeepney.io.blocking import DBusConnection
@@ -25,7 +27,6 @@ ITEM_INTERFACE = "org.kde.StatusNotifierItem"
 MENU_INTERFACE = "com.canonical.dbusmenu"
 PROPERTIES_INTERFACE = "org.freedesktop.DBus.Properties"
 POLL_SECONDS = 0.1
-DOCKER_SOCKET = "/var/run/docker.sock"
 
 type DBusValue = (
     str | int | bool | bytes | list[DBusValue] | tuple[DBusValue, ...] | dict[str, DBusValue]
@@ -169,25 +170,20 @@ class Ollama:
         return [model["name"] for model in body["models"]]
 
 
-class _UnixHTTPConnection(http.client.HTTPConnection):
-    def __init__(self, socket_path: str) -> None:
-        super().__init__("localhost", timeout=60)
-        self._socket_path = socket_path
-
-    def connect(self) -> None:
-        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.sock.settimeout(self.timeout)
-        self.sock.connect(self._socket_path)
-
-
-def stop_container(name: str) -> None:
-    connection = _UnixHTTPConnection(DOCKER_SOCKET)
+def port_accepts(host: str, port: int) -> bool:
     try:
-        connection.request("POST", f"/containers/{quote(name)}/stop?t=2")
-        response = connection.getresponse()
-        body = response.read()
-    finally:
-        connection.close()
-    # 304 means the container was already stopped.
-    if response.status not in (204, 304):
-        raise AssertionError(f"docker stop {name}: HTTP {response.status} {body!r}")
+        with socket.create_connection((host, port), timeout=1):
+            return True
+    except OSError:
+        return False
+
+
+def kill_proxy(process: subprocess.Popen[bytes]) -> None:
+    """Kill `socat` and the child it forks for each open connection.
+
+    The tray keeps its HTTP connection open between polls. Killing only the listener would leave
+    that child forwarding, and the server would still look reachable.
+    """
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(process.pid, signal.SIGKILL)
+    process.wait()

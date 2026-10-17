@@ -109,7 +109,7 @@ The pre-commit hooks run ruff and pyrefly on every commit.
 e2e/run.sh
 ```
 
-This needs Docker with Compose. It starts a real Ollama server and a test container with Xvfb, a session D-Bus and a stub tray host. The test reads the icon, tooltip and menu over D-Bus the way a desktop panel does, clicks `Stop <model>`, and stops the Ollama container. To do that, the test container mounts the Docker socket. The first run downloads `smollm2:135m` into a Docker volume, and later runs reuse it. `uv run pytest` does not collect these tests.
+This needs Docker with Compose. It starts a real Ollama server and a test container with Xvfb, a session D-Bus and a stub tray host. The test reads the icon, tooltip and menu over D-Bus the way a desktop panel does, clicks `Stop <model>`, and kills the TCP proxy (`socat`) between the tray and Ollama to show the unreachable state. The test container has no Docker socket. The first run downloads `smollm2:135m` into a Docker volume, and later runs reuse it. `uv run pytest` does not collect these tests.
 
 Modules in `src/ollama_tray/`:
 

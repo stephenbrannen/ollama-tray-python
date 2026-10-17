@@ -3,7 +3,9 @@
 Run it with `e2e/run.sh`. The default `uv run pytest` does not collect this directory.
 """
 
-from driver import Ollama, ToolTip, Tray, stop_container, wait_until
+import subprocess
+
+from driver import Ollama, ToolTip, Tray, kill_proxy, wait_until
 
 GREY = "#8b949e"
 GREEN = "#2ea043"
@@ -16,7 +18,7 @@ UNLOAD_SECONDS = 0.5
 
 
 def test_tray_follows_a_real_server(
-    tray: Tray, ollama: Ollama, model: str, ollama_container: str
+    tray: Tray, ollama: Ollama, model: str, proxy: subprocess.Popen[bytes]
 ) -> None:
     """Walk one session: idle, a model loads, Stop unloads it, then the server goes away.
 
@@ -46,6 +48,6 @@ def test_tray_follows_a_real_server(
     )
     assert tray.icon_color() == GREY
 
-    stop_container(ollama_container)
+    kill_proxy(proxy)
     wait_until(tray.tooltip, lambda tip: "Unreachable" in tip.title, "unreachable", UPDATE_SECONDS)
     assert tray.icon_color() == RED
