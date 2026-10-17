@@ -21,6 +21,7 @@ from tests.fixtures import HOST, make_model
 
 GREY = "#8b949e"
 RED = "#da3633"
+# Ollama reports a keep-alive of -1 as a time about 300 years away.
 KEPT_FOREVER = datetime(2319, 1, 1, tzinfo=UTC)
 RICH_TEXT_NAME = '<a href="x">click</a>'
 WAIT_MILLISECONDS = 2000
