@@ -1,7 +1,7 @@
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta, timezone
 
-from pytest import MonkeyPatch, fixture, mark, raises
+from pytest import MonkeyPatch, fixture, mark, param, raises
 from requests import ConnectionError as RequestsConnectionError
 from requests import Timeout
 from responses import RequestsMock, matchers
@@ -25,30 +25,25 @@ def client() -> OllamaClient:
 @mark.parametrize(
     ("flag", "env", "expected"),
     [
-        (None, None, "http://localhost:11434"),
-        (None, "", "http://localhost:11434"),
-        (None, "gpu-box", "http://gpu-box:11434"),
-        (None, "gpu-box:8080", "http://gpu-box:8080"),
-        (None, "https://gpu-box", "https://gpu-box:11434"),
-        (None, "https://gpu-box:8443", "https://gpu-box:8443"),
-        (None, "http://gpu-box:8080/", "http://gpu-box:8080"),
-        (None, "0.0.0.0", "http://0.0.0.0:11434"),
-        (None, "[::1]:9000", "http://[::1]:9000"),
-        ("flag-box:1", "env-box:2", "http://flag-box:1"),
-        ("", "env-box:2", "http://env-box:2"),
-    ],
-    ids=[
-        "default",
-        "empty-env-is-unset",
-        "env-bare-host",
-        "env-host-and-port",
-        "env-scheme-only",
-        "env-scheme-and-port",
-        "trailing-slash",
-        "wildcard-address",
-        "ipv6-with-port",
-        "flag-beats-env",
-        "empty-flag-falls-to-env",
+        param(None, None, "http://127.0.0.1:11434", id="default"),
+        param(None, "", "http://127.0.0.1:11434", id="empty-env-is-unset"),
+        param(None, "gpu-box", "http://gpu-box:11434", id="env-bare-host"),
+        param(None, "gpu-box:8080", "http://gpu-box:8080", id="env-host-and-port"),
+        param(None, "https://gpu-box", "https://gpu-box:11434", id="env-scheme-only"),
+        param(None, "https://gpu-box:8443", "https://gpu-box:8443", id="env-scheme-and-port"),
+        param(None, "http://gpu-box:8080/", "http://gpu-box:8080", id="trailing-slash"),
+        param(None, "0.0.0.0", "http://0.0.0.0:11434", id="wildcard-address"),
+        param(None, "[::1]:9000", "http://[::1]:9000", id="ipv6-with-port"),
+        param(
+            None,
+            "http://box:8080/ollama/",
+            "http://box:8080/ollama",
+            id="path-kept-trailing-slash-dropped",
+        ),
+        param(None, "box/ollama", "http://box:11434/ollama", id="path-with-default-port"),
+        param(None, ":8080", "http://127.0.0.1:8080", id="port-only"),
+        param("flag-box:1", "env-box:2", "http://flag-box:1", id="flag-beats-env"),
+        param("", "env-box:2", "http://env-box:2", id="empty-flag-falls-to-env"),
     ],
 )
 def test_resolve_host(
@@ -60,6 +55,15 @@ def test_resolve_host(
         monkeypatch.setenv("OLLAMA_HOST", env)
 
     assert resolve_host(flag) == expected
+
+
+@mark.parametrize(
+    "host",
+    [param("box:abc", id="non-numeric-port"), param("box:70000", id="out-of-range-port")],
+)
+def test_resolve_host_rejects_invalid_port(host: str) -> None:
+    with raises(ValueError):
+        resolve_host(host)
 
 
 @mark.parametrize(

@@ -7,7 +7,7 @@ from urllib.parse import urlsplit
 
 import requests
 
-DEFAULT_HOST = "http://localhost:11434"
+DEFAULT_HOST = "http://127.0.0.1:11434"
 DEFAULT_PORT = 11434
 STATUS_TIMEOUT_SECONDS = 2
 
@@ -26,15 +26,19 @@ class LoadedModel:
 def resolve_host(flag: str | None) -> str:
     """Return the server base URL from the flag, else `OLLAMA_HOST`, else the default.
 
-    Mirrors the `ollama` CLI so the tray and `ollama ps` talk to the same server: a
-    missing scheme means `http://` and a missing port means 11434.
+    A missing scheme means `http://`, a missing host means `127.0.0.1`, and a path after
+    the host is kept without its trailing slash. An invalid port raises `ValueError`.
+    The host is not `localhost` because that can resolve to `::1` while Ollama listens on
+    IPv4. A missing port means 11434 on every scheme. This differs from the `ollama` CLI,
+    which uses 80 and 443, because Ollama is almost never on those ports.
     """
     raw = flag or os.environ.get("OLLAMA_HOST") or DEFAULT_HOST
     parsed = urlsplit(raw if "://" in raw else f"http://{raw}")
-    hostname = parsed.hostname or "localhost"
+    hostname = parsed.hostname or "127.0.0.1"
     if ":" in hostname:
         hostname = f"[{hostname}]"
-    return f"{parsed.scheme}://{hostname}:{parsed.port or DEFAULT_PORT}"
+    port = parsed.port or DEFAULT_PORT
+    return f"{parsed.scheme}://{hostname}:{port}{parsed.path.rstrip('/')}"
 
 
 class OllamaClient:
