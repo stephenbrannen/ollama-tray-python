@@ -1,5 +1,6 @@
 """Maps a client result to the tray's status and tooltip text, with no Qt dependency."""
 
+import re
 from enum import Enum
 from html import escape
 
@@ -9,6 +10,8 @@ from ollama_tray.client import LoadedModel, OllamaUnavailable
 BYTES_PER_GB = 1_000_000_000
 # A long line would stretch the tooltip and notification across the screen.
 MAX_LINE_CHARACTERS = 120
+LINE_BREAKS = re.compile(r"\s*[\r\n]+\s*")
+CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 
 class TrayStatus(Enum):
@@ -36,10 +39,24 @@ def shorten(text: str) -> str:
 def escape_line(text: str) -> str:
     """Make one line of server-supplied text safe to show, capped in length.
 
-    Qt may read a tooltip or notification as rich text, so a model named `<a href="x">` could
-    otherwise render as a link. The cap comes first so it cannot cut an escape sequence in half.
+    Qt may read a notification as rich text, so a model named `<a href="x">` could otherwise
+    render as a link. The cap comes first so it cannot cut an escape sequence in half.
     """
     return escape(shorten(text))
+
+
+def plain_text(text: str) -> str:
+    """Make server-supplied text safe as one tooltip value, without HTML-escaping it.
+
+    Desktops show the tooltip as plain text, so `&` and `<` must stay as they are. Control
+    characters and line breaks would break the one-value-per-line layout, so they are removed.
+    """
+    return CONTROL_CHARACTERS.sub("", LINE_BREAKS.sub(" ", text))
+
+
+def plain_line(text: str) -> str:
+    """Make one tooltip value plain text, capped in length."""
+    return shorten(plain_text(text))
 
 
 def menu_label_text(text: str) -> str:
@@ -57,18 +74,18 @@ def escape_lines(text: str) -> str:
 
 def tooltip_text(host: str, result: list[LoadedModel] | OllamaUnavailable | None) -> str:
     """Return the server address, then one line per loaded model with its VRAM in GB."""
-    host = escape(host)
+    host = plain_text(host)
     if result is None:
         return f"{host}\nChecking..."
     if isinstance(result, OllamaUnavailable):
         reason = str(result).strip().splitlines()
         if not reason:
             return f"{host}\nUnreachable"
-        return f"{host}\nUnreachable: {escape_line(reason[0])}"
+        return f"{host}\nUnreachable: {plain_line(reason[0])}"
     if not result:
         return f"{host}\nNo model loaded"
     lines = [
-        f"{escape_line(model.name)} ({model.size_vram / BYTES_PER_GB:.1f} GB VRAM)"
+        f"{plain_line(model.name)} ({model.size_vram / BYTES_PER_GB:.1f} GB VRAM)"
         for model in result
     ]
     return "\n".join([host, *lines])

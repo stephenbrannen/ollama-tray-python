@@ -5,7 +5,6 @@ from ollama_tray.status import TrayStatus, status_from_result, tooltip_text
 from tests.fixtures import HOST, make_model
 
 RICH_TEXT_NAME = '<a href="x">click</a>'
-ESCAPED_RICH_TEXT_NAME = "&lt;a href=&quot;x&quot;&gt;click&lt;/a&gt;"
 
 
 @mark.parametrize(
@@ -41,15 +40,19 @@ def test_status_from_result(
         ),
         (
             [make_model(RICH_TEXT_NAME, 4_700_000_000)],
-            f"{HOST}\n{ESCAPED_RICH_TEXT_NAME} (4.7 GB VRAM)",
+            f"{HOST}\n{RICH_TEXT_NAME} (4.7 GB VRAM)",
+        ),
+        (
+            [make_model("r&d\x07:8b\nsecond", 4_700_000_000)],
+            f"{HOST}\nr&d:8b second (4.7 GB VRAM)",
         ),
         (
             [make_model("m" * 10_000, 4_700_000_000)],
             f"{HOST}\n{'m' * 117}... (4.7 GB VRAM)",
         ),
         (
-            OllamaUnavailable(RICH_TEXT_NAME),
-            f"{HOST}\nUnreachable: {ESCAPED_RICH_TEXT_NAME}",
+            OllamaUnavailable(f"{RICH_TEXT_NAME} & \x1b[31mred"),
+            f"{HOST}\nUnreachable: {RICH_TEXT_NAME} & [31mred",
         ),
         (
             OllamaUnavailable("e" * 10_000),
@@ -64,6 +67,7 @@ def test_status_from_result(
         "nothing-loaded",
         "models-with-vram",
         "rich-text-model-name",
+        "model-name-with-control-character-and-newline",
         "long-model-name",
         "rich-text-reason",
         "long-reason",
