@@ -77,8 +77,8 @@ class MenuActions:
 def populate_menu(
     menu: QMenu, models: list[LoadedModel], keepable: list[str], actions: MenuActions
 ) -> None:
-    # `addMenu` parents the submenu to `menu`, and `clear` does not delete it, so every rebuild
-    # would leak one.
+    # The submenu is a child of `menu`, and `clear` does not delete it, so every rebuild would
+    # leak one.
     for old_submenu in menu.findChildren(QMenu, options=Qt.FindChildOption.FindDirectChildrenOnly):
         old_submenu.deleteLater()
     menu.clear()
@@ -90,7 +90,10 @@ def populate_menu(
     if len(models) > 1:
         menu.addAction("Stop all").triggered.connect(lambda _checked=False: actions.on_stop_all())
     if keepable:
-        keep_menu = menu.addMenu("Keep loaded")
+        # Some PySide6 builds leave `addMenu(str)` owned by Python, which deletes the submenu once
+        # this function returns. A parent passed to the constructor always keeps it alive.
+        keep_menu = QMenu("Keep loaded", menu)
+        menu.addMenu(keep_menu)
         for name in keepable:
             keep_action = keep_menu.addAction(menu_label_text(name))
             keep_action.triggered.connect(
