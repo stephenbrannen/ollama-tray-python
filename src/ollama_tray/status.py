@@ -10,8 +10,10 @@ from ollama_tray.client import LoadedModel, OllamaUnavailable
 
 # The tooltip says "GB", so this is decimal (10^9 bytes), not binary GiB.
 BYTES_PER_GB = 1_000_000_000
-# A long line would stretch the tooltip and notification across the screen.
-MAX_LINE_CHARACTERS = 120
+# A long name or message would stretch the tooltip, menu and notification across the screen.
+# The caps match the Go tray so both apps show the same text.
+MAX_NAME_CHARACTERS = 64
+MAX_ERROR_CHARACTERS = 200
 # `keep_alive: -1` makes Ollama report a time centuries away, not a special value. Anything
 # further out than this is a model that stays loaded.
 KEPT_LOADED_AFTER = timedelta(days=100 * 365)
@@ -33,20 +35,11 @@ def status_from_result(result: list[LoadedModel] | OllamaUnavailable) -> TraySta
     return TrayStatus.LOADED if result else TrayStatus.IDLE
 
 
-def shorten(text: str) -> str:
-    """Cut `text` to one line's worth of characters, marking the cut with `...`."""
-    if len(text) <= MAX_LINE_CHARACTERS:
+def shorten(text: str, limit: int) -> str:
+    """Cut `text` to `limit` characters, marking the cut with one `…`."""
+    if len(text) <= limit:
         return text
-    return f"{text[: MAX_LINE_CHARACTERS - 3]}..."
-
-
-def escape_line(text: str) -> str:
-    """Make one line of server-supplied text safe to show, capped in length.
-
-    Qt may read a notification as rich text, so a model named `<a href="x">` could otherwise
-    render as a link. The cap comes first so it cannot cut an escape sequence in half.
-    """
-    return escape(shorten(text))
+    return f"{text[: limit - 1]}…"
 
 
 def plain_text(text: str) -> str:
@@ -61,9 +54,9 @@ def plain_text(text: str) -> str:
     return " ".join(spaced.split())
 
 
-def plain_line(text: str) -> str:
-    """Make one tooltip value plain text, capped in length."""
-    return shorten(plain_text(text))
+def plain_line(text: str, limit: int) -> str:
+    """Make server-supplied text plain, one line and at most `limit` characters."""
+    return shorten(plain_text(text), limit)
 
 
 def is_kept_loaded(expires_at: datetime | None, now: datetime) -> bool:
@@ -86,18 +79,25 @@ def unload_text(expires_at: datetime | None, now: datetime) -> str:
     return f"unloads in {hours}h" + (f" {minutes}m" if minutes else "")
 
 
-def menu_label_text(text: str) -> str:
-    """Make server-supplied text safe as a menu item label, capped in length.
+def menu_label_text(name: str) -> str:
+    """Make a model name safe as a menu item label.
 
     Qt reads a single `&` in an action's text as a shortcut marker and hides it. Menu text is
     not rich text, so only `&` needs doubling, and the cap comes first so it cannot split a pair.
     """
-    return shorten(text).replace("&", "&&")
+    return plain_line(name, MAX_NAME_CHARACTERS).replace("&", "&&")
 
 
-def escape_lines(text: str) -> str:
-    """Escape each line of server-supplied text and keep the line breaks."""
-    return "\n".join(escape_line(line) for line in text.splitlines())
+def failure_line(name: str, error: str) -> str:
+    """Make one `name: error` notification line safe to show.
+
+    Qt may read a notification as rich text, so a model named `<a href="x">` could otherwise
+    render as a link. Each part is capped before it is escaped so the cap cannot cut an
+    escape sequence in half.
+    """
+    name_text = escape(plain_line(name, MAX_NAME_CHARACTERS))
+    error_text = escape(plain_line(error, MAX_ERROR_CHARACTERS))
+    return f"{name_text}: {error_text}"
 
 
 def utc_now() -> datetime:
@@ -120,7 +120,7 @@ def tooltip_text(
         reason = str(result).strip().splitlines()
         if not reason:
             return f"{host}\nUnreachable"
-        return f"{host}\nUnreachable: {plain_line(reason[0])}"
+        return f"{host}\nUnreachable: {plain_line(reason[0], MAX_ERROR_CHARACTERS)}"
     if not result:
         return f"{host}\nNo model loaded"
     current = now()
@@ -129,5 +129,5 @@ def tooltip_text(
         details = [f"{model.size_vram / BYTES_PER_GB:.1f} GB VRAM"]
         if text := unload_text(model.expires_at, current):
             details.append(text)
-        lines.append(f"{plain_line(model.name)} ({', '.join(details)})")
+        lines.append(f"{plain_line(model.name, MAX_NAME_CHARACTERS)} ({', '.join(details)})")
     return "\n".join([host, *lines])

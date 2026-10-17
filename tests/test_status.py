@@ -3,7 +3,13 @@ from datetime import UTC, datetime, timedelta
 from pytest import mark, param
 
 from ollama_tray.client import LoadedModel, OllamaUnavailable
-from ollama_tray.status import TrayStatus, status_from_result, tooltip_text, unload_text
+from ollama_tray.status import (
+    TrayStatus,
+    failure_line,
+    status_from_result,
+    tooltip_text,
+    unload_text,
+)
 from tests.fixtures import HOST, make_model
 
 RICH_TEXT_NAME = '<a href="x">click</a>'
@@ -65,7 +71,7 @@ def test_status_from_result(
         ),
         (
             [make_model("m" * 10_000, 4_700_000_000)],
-            f"{HOST}\n{'m' * 117}... (4.7 GB VRAM)",
+            f"{HOST}\n{'m' * 63}… (4.7 GB VRAM)",
         ),
         (
             OllamaUnavailable(f"{RICH_TEXT_NAME} & \x1b[31mred"),
@@ -73,7 +79,7 @@ def test_status_from_result(
         ),
         (
             OllamaUnavailable("e" * 10_000),
-            f"{HOST}\nUnreachable: {'e' * 117}...",
+            f"{HOST}\nUnreachable: {'e' * 199}…",
         ),
     ],
     ids=[
@@ -115,3 +121,18 @@ def test_tooltip_text(result: list[LoadedModel] | OllamaUnavailable | None, expe
 )
 def test_unload_text(expires_at: datetime | None, expected: str) -> None:
     assert unload_text(expires_at, NOW) == expected
+
+
+@mark.parametrize(
+    ("name", "error", "expected"),
+    [
+        ("llama3:8b", "boom", "llama3:8b: boom"),
+        (RICH_TEXT_NAME, "a & b", "&lt;a href=&quot;x&quot;&gt;click&lt;/a&gt;: a &amp; b"),
+        ("a\nb\x07c", "x\ry", "a b c: x y"),
+        ("llama\u202e3", "e\u200bf", "llama 3: e f"),
+        ("m" * 300, "e" * 300, f"{'m' * 63}…: {'e' * 199}…"),
+    ],
+    ids=["plain", "rich-text", "control-characters", "format-characters", "over-cap"],
+)
+def test_failure_line(name: str, error: str, expected: str) -> None:
+    assert failure_line(name, error) == expected
