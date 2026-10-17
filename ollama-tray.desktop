@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Ollama Tray
+Comment=Show which models an Ollama server has loaded
+Exec=ollama-tray
+Icon=applications-science
+Terminal=false
+Categories=Utility;
+X-GNOME-Autostart-enabled=true
