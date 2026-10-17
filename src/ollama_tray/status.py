@@ -24,7 +24,8 @@ def tooltip_text(host: str, result: list[LoadedModel] | OllamaUnavailable | None
     if result is None:
         return f"{host}\nChecking..."
     if isinstance(result, OllamaUnavailable):
-        return f"{host}\nUnreachable"
+        reason = str(result).strip().splitlines()
+        return f"{host}\nUnreachable: {reason[0]}" if reason else f"{host}\nUnreachable"
     if not result:
         return f"{host}\nNo model loaded"
     lines = [f"{model.name} ({model.size_vram / BYTES_PER_GB:.1f} GB VRAM)" for model in result]

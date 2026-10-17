@@ -33,14 +33,23 @@ def test_status_from_result(
     ("result", "expected"),
     [
         (None, "http://localhost:11434\nChecking..."),
-        (OllamaUnavailable("down"), "http://localhost:11434\nUnreachable"),
+        (OllamaUnavailable("down"), "http://localhost:11434\nUnreachable: down"),
+        (OllamaUnavailable(""), "http://localhost:11434\nUnreachable"),
+        (OllamaUnavailable("a: boom\nb: bang"), "http://localhost:11434\nUnreachable: a: boom"),
         ([], "http://localhost:11434\nNo model loaded"),
         (
             [make_model("llama3:8b", 4_700_000_000), make_model("qwen3:4b", 2_549_000_000)],
             "http://localhost:11434\nllama3:8b (4.7 GB VRAM)\nqwen3:4b (2.5 GB VRAM)",
         ),
     ],
-    ids=["first-poll-pending", "unreachable", "nothing-loaded", "models-with-vram"],
+    ids=[
+        "first-poll-pending",
+        "unreachable",
+        "no-reason",
+        "multi-line-reason",
+        "nothing-loaded",
+        "models-with-vram",
+    ],
 )
 def test_tooltip_text(result: list[LoadedModel] | OllamaUnavailable | None, expected: str) -> None:
     assert tooltip_text(HOST, result) == expected
