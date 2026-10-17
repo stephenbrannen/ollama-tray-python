@@ -1,8 +1,11 @@
+import time
 from collections.abc import Callable, Iterator
+from threading import Event
+from typing import NamedTuple
 from unittest.mock import MagicMock, patch
 
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QMenu
+from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 from pytest import CaptureFixture, MonkeyPatch, fixture, mark, raises
 from responses import RequestsMock
 
@@ -91,7 +94,7 @@ def test_apply_result_updates_tooltip_and_menu(qapp: QApplication) -> None:
 
     controller.apply_result(OllamaUnavailable("down"))
 
-    assert controller._tray.toolTip() == "http://ollama.test:11434\nUnreachable"
+    assert controller._tray.toolTip() == "http://ollama.test:11434\nUnreachable: down"
     assert labels(controller._menu) == ["Refresh now", "Quit"]
 
 
@@ -150,7 +153,7 @@ def test_poll_recovers_after_unexpected_error(loaded_models: MagicMock, qapp: QA
     controller = TrayController(OllamaClient(host), host, 5)
 
     controller.refresh()
-    assert wait_for(lambda: controller._tray.toolTip().endswith("Unreachable"), 2000)
+    assert wait_for(lambda: controller._tray.toolTip().endswith("Unreachable: bug"), 2000)
     controller.refresh()
 
     assert wait_for(lambda: controller._tray.toolTip().endswith("No model loaded"), 2000)
@@ -218,6 +221,26 @@ def test_main_exits_with_message_when_no_tray(
     assert "AppIndicator" in str(exit_info.value.code)
 
 
+@patch("ollama_tray.app.TrayController")
+@patch("ollama_tray.app.QSystemTrayIcon.isSystemTrayAvailable", return_value=True)
+@patch("ollama_tray.app.QApplication")
+def test_main_starts_controller_and_exits_with_event_loop_code(
+    app: MagicMock, _available: MagicMock, controller_class: MagicMock, monkeypatch: MonkeyPatch
+) -> None:
+    monkeypatch.setattr("sys.argv", ["ollama-tray", "--host", "gpu-box:8080", "--interval", "7"])
+    app.return_value.exec.return_value = 3
+
+    with raises(SystemExit) as exit_info:
+        main()
+
+    assert exit_info.value.code == 3
+    controller_class.assert_called_once()
+    assert controller_class.call_args.args[1:] == ("http://gpu-box:8080", 7.0)
+    controller = controller_class.return_value
+    app.return_value.aboutToQuit.connect.assert_called_once_with(controller.shutdown)
+    controller.start.assert_called_once_with()
+
+
 def test_stop_all_continues_past_a_failure_and_reports_each(
     qapp: QApplication, responses: RequestsMock
 ) -> None:
@@ -234,3 +257,164 @@ def test_stop_all_continues_past_a_failure_and_reports_each(
     assert wait_for(lambda: controller._tray.showMessage.called, 2000)
     message = controller._tray.showMessage.call_args.args[1]
     assert message.startswith("a: ") and "b:" not in message
+
+
+class StubClient(OllamaClient):
+    """Answers instantly, or blocks on `gate` so a test controls when a call returns."""
+
+    def __init__(self) -> None:
+        super().__init__("http://ollama.test:11434")
+        self.gate = Event()
+        self.block_polls = False
+        self.block_unloads = False
+        self.unload_started = Event()
+        self.polls = 0
+        self.unloaded: list[str] = []
+        self.models: list[LoadedModel] = []
+
+    def loaded_models(self) -> list[LoadedModel]:
+        self.polls += 1
+        if self.block_polls:
+            self.gate.wait()
+        return self.models
+
+    def unload(self, name: str) -> None:
+        self.unload_started.set()
+        if self.block_unloads:
+            self.gate.wait()
+        self.unloaded.append(name)
+
+
+class Harness(NamedTuple):
+    controller: TrayController
+    client: StubClient
+
+
+@fixture
+def harness(qapp: QApplication) -> Iterator[Harness]:
+    client = StubClient()
+    controller = TrayController(client, "http://ollama.test:11434", 0.01)
+    yield Harness(controller, client)
+    client.gate.set()
+    controller.shutdown()
+    controller._worker.join(2)
+
+
+def test_start_shows_tray_polls_and_keeps_polling_on_the_timer(harness: Harness) -> None:
+    controller, client = harness
+    controller._tray.show = MagicMock()
+
+    controller.start()
+
+    controller._tray.show.assert_called_once_with()
+    assert wait_for(lambda: client.polls >= 3, 2000)
+    assert controller._tray.toolTip().endswith("No model loaded")
+
+
+def test_shutdown_returns_promptly_while_stop_all_is_hung(harness: Harness) -> None:
+    controller, client = harness
+    client.block_unloads = True
+    controller.stop_models(["a", "b"])
+    assert client.unload_started.wait(2)
+    controller.start()
+    controller._tray.hide = MagicMock()
+
+    started = time.monotonic()
+    controller.shutdown()
+    elapsed = time.monotonic() - started
+    client.gate.set()
+    controller._worker.join(2)
+
+    assert elapsed < 1
+    assert controller._worker.daemon
+    assert client.unloaded == ["a"]
+    assert not controller._timer.isActive()
+    controller._tray.hide.assert_called_once_with()
+
+
+def test_shutdown_drops_queued_polls_and_refuses_new_work(harness: Harness) -> None:
+    controller, client = harness
+    client.block_unloads = True
+    controller.stop_models(["a"])
+    assert client.unload_started.wait(2)
+    controller.refresh()
+
+    controller.shutdown()
+    controller.refresh()
+    controller.stop_models(["b"])
+    client.gate.set()
+    controller._worker.join(2)
+
+    assert client.polls == 0
+    assert client.unloaded == ["a"]
+
+
+def test_duplicate_stop_is_ignored_while_unload_is_in_flight(harness: Harness) -> None:
+    controller, client = harness
+    client.block_unloads = True
+
+    controller.stop_models(["a"])
+    controller.stop_models(["a", "b"])
+    client.gate.set()
+
+    assert wait_for(lambda: client.unloaded == ["a", "b"], 2000)
+    assert wait_for(lambda: not controller._unloading, 2000)
+    controller.stop_models(["a"])
+    assert wait_for(lambda: client.unloaded == ["a", "b", "a"], 2000)
+
+
+def test_stop_finishing_during_a_poll_queues_exactly_one_follow_up_poll(harness: Harness) -> None:
+    controller, client = harness
+
+    controller.stop_models(["a"])
+    controller.stop_models(["b"])
+    controller.refresh()
+
+    assert wait_for(lambda: client.polls == 2, 2000)
+    QTest.qWait(50)
+    assert client.unloaded == ["a", "b"]
+    assert client.polls == 2
+
+
+def test_poll_in_flight_past_the_deadline_shows_not_responding(harness: Harness) -> None:
+    controller, client = harness
+    client.block_polls = True
+    assert controller._watchdog.interval() == 3000
+    controller._watchdog.setInterval(10)
+
+    controller.refresh()
+
+    assert wait_for(
+        lambda: controller._tray.toolTip().endswith("Unreachable: not responding"), 2000
+    )
+    client.models = [make_model("llama3:8b")]
+    client.gate.set()
+    assert wait_for(lambda: controller._tray.toolTip().endswith("(4.7 GB VRAM)"), 2000)
+    assert not controller._watchdog.isActive()
+
+
+@mark.parametrize("repeats", [1, 3], ids=["single", "repeated"])
+@patch.object(QSystemTrayIcon, "setIcon")
+def test_icon_is_set_only_when_the_status_changes(
+    set_icon: MagicMock, harness: Harness, repeats: int
+) -> None:
+    controller, _client = harness
+    set_icon.reset_mock()
+
+    for _ in range(repeats):
+        controller.apply_result([make_model("llama3:8b")])
+    controller.apply_result([])
+
+    assert set_icon.call_count == 2
+
+
+def test_menu_is_not_rebuilt_while_open_and_catches_up_when_it_closes(harness: Harness) -> None:
+    controller, _client = harness
+    menu = controller._menu
+
+    menu.aboutToShow.emit()
+    controller.apply_result([make_model("llama3:8b")])
+
+    assert labels(menu) == ["Refresh now", "Quit"]
+    menu.aboutToHide.emit()
+    assert wait_for(lambda: labels(menu) == ["Stop llama3:8b", "Refresh now", "Quit"], 2000)
