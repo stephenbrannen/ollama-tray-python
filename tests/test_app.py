@@ -172,7 +172,7 @@ def test_refresh_applies_worker_result_on_gui_thread(
 
     controller.refresh()
     controller.refresh()
-    expected = f"{HOST}\nllama3:8b (4.7 GB VRAM)"
+    expected = f"{HOST}\nllama3:8b (4.7 GB VRAM, unloads in <1m)"
 
     assert wait_for(lambda: tray.toolTip() == expected)
     assert len(responses.calls) == 1

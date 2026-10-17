@@ -1,6 +1,8 @@
 """Maps a client result to the tray's status and tooltip text, with no Qt dependency."""
 
-import re
+import unicodedata
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 from html import escape
 
@@ -10,8 +12,10 @@ from ollama_tray.client import LoadedModel, OllamaUnavailable
 BYTES_PER_GB = 1_000_000_000
 # A long line would stretch the tooltip and notification across the screen.
 MAX_LINE_CHARACTERS = 120
-LINE_BREAKS = re.compile(r"\s*[\r\n]+\s*")
-CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+# `keep_alive: -1` makes Ollama report a time centuries away, not a special value. Anything
+# further out than this is a model that stays loaded.
+KEPT_LOADED_AFTER = timedelta(days=100 * 365)
+UNSAFE_CATEGORIES = frozenset({"Cc", "Cf"})
 
 
 class TrayStatus(Enum):
@@ -48,15 +52,34 @@ def escape_line(text: str) -> str:
 def plain_text(text: str) -> str:
     """Make server-supplied text safe as one tooltip value, without HTML-escaping it.
 
-    Desktops show the tooltip as plain text, so `&` and `<` must stay as they are. Control
-    characters and line breaks would break the one-value-per-line layout, so they are removed.
+    Desktops show the tooltip as plain text, so `&` and `<` must stay as they are. Line breaks
+    and other control characters would break the one-value-per-line layout. Format characters
+    such as U+202E (right-to-left override) are invisible but can make the text read as
+    something else. Both become spaces, and runs of whitespace collapse to one space.
     """
-    return CONTROL_CHARACTERS.sub("", LINE_BREAKS.sub(" ", text))
+    spaced = "".join(" " if unicodedata.category(c) in UNSAFE_CATEGORIES else c for c in text)
+    return " ".join(spaced.split())
 
 
 def plain_line(text: str) -> str:
     """Make one tooltip value plain text, capped in length."""
     return shorten(plain_text(text))
+
+
+def unload_text(expires_at: datetime | None, now: datetime) -> str:
+    """Say when the server unloads a model on its own, or return `""` when that is unknown."""
+    if expires_at is None:
+        return ""
+    left = expires_at - now
+    if left > KEPT_LOADED_AFTER:
+        return "kept loaded"
+    minutes = int(left.total_seconds() // 60)
+    if minutes < 1:
+        return "unloads in <1m"
+    hours, minutes = divmod(minutes, 60)
+    if hours == 0:
+        return f"unloads in {minutes}m"
+    return f"unloads in {hours}h" + (f" {minutes}m" if minutes else "")
 
 
 def menu_label_text(text: str) -> str:
@@ -72,8 +95,19 @@ def escape_lines(text: str) -> str:
     return "\n".join(escape_line(line) for line in text.splitlines())
 
 
-def tooltip_text(host: str, result: list[LoadedModel] | OllamaUnavailable | None) -> str:
-    """Return the server address, then one line per loaded model with its VRAM in GB."""
+def utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def tooltip_text(
+    host: str,
+    result: list[LoadedModel] | OllamaUnavailable | None,
+    now: Callable[[], datetime] = utc_now,
+) -> str:
+    """Return the server address, then one line per loaded model.
+
+    Each line has the model's VRAM in GB and, when known, the time until the server unloads it.
+    """
     host = plain_text(host)
     if result is None:
         return f"{host}\nChecking..."
@@ -84,8 +118,11 @@ def tooltip_text(host: str, result: list[LoadedModel] | OllamaUnavailable | None
         return f"{host}\nUnreachable: {plain_line(reason[0])}"
     if not result:
         return f"{host}\nNo model loaded"
-    lines = [
-        f"{plain_line(model.name)} ({model.size_vram / BYTES_PER_GB:.1f} GB VRAM)"
-        for model in result
-    ]
+    current = now()
+    lines = []
+    for model in result:
+        details = [f"{model.size_vram / BYTES_PER_GB:.1f} GB VRAM"]
+        if text := unload_text(model.expires_at, current):
+            details.append(text)
+        lines.append(f"{plain_line(model.name)} ({', '.join(details)})")
     return "\n".join([host, *lines])

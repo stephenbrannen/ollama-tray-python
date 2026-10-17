@@ -21,6 +21,22 @@ Right-click the icon.
 
 If a stop fails, a notification shows the reason.
 
+## Keeping models loaded
+
+Ollama unloads a model after five minutes without a request, unless the server is told otherwise. To keep models loaded longer, set `OLLAMA_KEEP_ALIVE` on the server. On NixOS:
+
+```nix
+services.ollama.environmentVariables.OLLAMA_KEEP_ALIVE = "24h";
+```
+
+The tooltip shows how long each model has left, for example `llama3:8b (4.7 GB VRAM, unloads in 3h 12m)`.
+
+* `unloads in <1m`: less than a minute left.
+* `kept loaded`: the server never unloads the model on its own (`OLLAMA_KEEP_ALIVE=-1`).
+* Nothing is shown when the server does not report a time the tray can read.
+
+Use `Stop <model>` to unload a model before its time is up.
+
 ## Options
 
 * `--host`: server address as `[http[s]://][host][:port][/path]`. Falls back to `OLLAMA_HOST`, then `http://127.0.0.1:11434`.
@@ -114,5 +130,5 @@ This needs Docker with Compose. It starts a real Ollama server and a test contai
 Modules in `src/ollama_tray/`:
 
 * `client.py`: the Ollama HTTP client and `resolve_host`. No GUI code.
-* `status.py`: maps a client result to a status, tooltip text and escaped text. No GUI code.
+* `status.py`: maps a client result to a status, tooltip text (with the time until each model unloads) and escaped text. No GUI code.
 * `app.py`: the tray icon, menu, worker thread and command line.

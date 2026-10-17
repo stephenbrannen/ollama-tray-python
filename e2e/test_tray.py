@@ -3,6 +3,7 @@
 Run it with `e2e/run.sh`. The default `uv run pytest` does not collect this directory.
 """
 
+import re
 import subprocess
 
 from driver import Ollama, ToolTip, Tray, kill_proxy, wait_until
@@ -23,7 +24,7 @@ UNLOAD_SECONDS = 0.5
 def test_tray_follows_a_real_server(
     tray: Tray, ollama: Ollama, model: str, proxy: subprocess.Popen[bytes]
 ) -> None:
-    """Walk one session: idle, a model loads, Stop unloads it, then the server goes away.
+    """Walk one session: idle, load, keep loaded, Stop, then the server goes away.
 
     The steps share one app and one server, and each step starts from the state the previous
     one left, so they are one test.
@@ -31,12 +32,25 @@ def test_tray_follows_a_real_server(
     wait_until(tray.tooltip, lambda tip: tip.title.endswith("No model loaded"), "idle", 10)
     assert tray.icon_color() == GREY
 
-    ollama.load(model)
+    ollama.load(model, keep_alive="10m")
     tooltip: ToolTip = wait_until(
         tray.tooltip, lambda tip: model in tip.title, "the model in the tooltip", UPDATE_SECONDS
     )
-    assert tooltip.title.splitlines()[1].startswith(f"{model} (")
+    # The server counts down from ten minutes, so a slow runner may already show nine.
+    assert re.fullmatch(
+        rf"{re.escape(model)} \(\d+\.\d GB VRAM, unloads in (9|10)m\)",
+        tooltip.title.splitlines()[1],
+    )
     assert tray.icon_color() == GREEN
+
+    ollama.load(model, keep_alive=-1)
+    tooltip = wait_until(
+        tray.tooltip,
+        lambda tip: "kept loaded" in tip.title,
+        "the tooltip to show the model kept loaded",
+        UPDATE_SECONDS,
+    )
+    assert tooltip.title.splitlines()[1].endswith(", kept loaded)")
 
     items = wait_until(
         tray.menu_items, lambda labels: f"Stop {model}" in labels, "a Stop item", UPDATE_SECONDS

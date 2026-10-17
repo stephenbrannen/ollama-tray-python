@@ -1,5 +1,6 @@
 import time
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Event, Thread
 
@@ -160,27 +161,50 @@ def test_resolve_host_rejects_invalid_address(host: str) -> None:
 @mark.parametrize(
     ("payload", "expected"),
     [
-        ({"models": []}, []),
-        (
+        param({"models": []}, [], id="none"),
+        param(
             {"models": [{"name": "llama3:8b", "size_vram": 5137025024}]},
             [LoadedModel("llama3:8b", 5137025024)],
+            id="one-without-expires-at",
         ),
-        (
+        param(
             {
                 "models": [
-                    {"name": "llama3:8b", "size_vram": 1, "expires_at": "2026-10-16T12:30:00Z"},
-                    {"name": "qwen3:4b", "size_vram": 0, "expires_at": "not a date"},
+                    {
+                        "name": "llama3:8b",
+                        "size_vram": 1,
+                        "expires_at": "2026-10-16T12:30:00.123456789-04:00",
+                    },
+                    {"name": "qwen3:4b", "size_vram": 0, "expires_at": "2026-10-16T12:30:00Z"},
                 ]
             },
-            [LoadedModel("llama3:8b", 1), LoadedModel("qwen3:4b", 0)],
+            [
+                LoadedModel("llama3:8b", 1, datetime(2026, 10, 16, 16, 30, 0, 123456, tzinfo=UTC)),
+                LoadedModel("qwen3:4b", 0, datetime(2026, 10, 16, 12, 30, tzinfo=UTC)),
+            ],
+            id="expires-at-with-fraction-and-offset",
         ),
+        *[
+            param(
+                {"models": [{"name": "llama3:8b", "size_vram": 1, "expires_at": value}]},
+                [LoadedModel("llama3:8b", 1, None)],
+                id=f"unreadable-expires-at-{label}",
+            )
+            for label, value in [
+                ("not-a-date", "not a date"),
+                ("empty", ""),
+                ("null", None),
+                ("number", 1_760_000_000),
+                ("no-zone", "2026-10-16T12:30:00"),
+                ("overflow", "9999-12-31T23:59:59-23:00"),
+            ]
+        ],
     ],
-    ids=["none", "one", "two-ignoring-expires-at"],
 )
 def test_loaded_models_parses_api_ps(
     client: OllamaClient,
     responses: RequestsMock,
-    payload: dict[str, list[dict[str, str | int]]],
+    payload: dict[str, list[dict[str, str | int | None]]],
     expected: list[LoadedModel],
 ) -> None:
     responses.get(
