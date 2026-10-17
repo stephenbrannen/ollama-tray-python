@@ -60,6 +60,8 @@ Try it without installing:
 nix run github:stephenbrannen/ollama-tray-python
 ```
 
+Nix downloads the prebuilt package from the public `ollama-tray` Cachix cache instead of compiling it. The first time, Nix asks whether to trust the cache settings in the flake. Answer `y`, or pass `--accept-flake-config` to skip the prompt.
+
 Or add it to a flake-based system configuration:
 
 ```nix
@@ -98,6 +100,16 @@ Or add it to a flake-based system configuration:
 * `inputs.nixpkgs.follows = "nixpkgs"` makes the package share your system's nixpkgs, so it reuses your Python and PySide6 instead.
 * For a one-off run with your own nixpkgs, use `nix run --override-input nixpkgs nixpkgs github:stephenbrannen/ollama-tray-python`.
 * A shared nixpkgs must provide Python 3.13 and PySide6 6.x.
+* To use the cache for every build on the system, add it to your NixOS configuration. Without this, a system rebuild compiles the package, because Nix ignores the cache settings of a flake used as an input:
+
+  ```nix
+  nix.settings = {
+    substituters = [ "https://ollama-tray.cachix.org" ];
+    trusted-public-keys = [ "ollama-tray.cachix.org-1:VsA+mvlRdugWzqzTzrRhqRpJ25Sc9tbL6z4or9oHc+U=" ];
+  };
+  ```
+
+* The cache is public, so anyone can download its contents. It holds only `x86_64-linux` builds made against this repository's pinned nixpkgs, so `aarch64-linux` and `inputs.nixpkgs.follows` builds still compile locally.
 * `nix flake update` refreshes the pinned nixpkgs.
 * GNOME needs the AppIndicator extension to show tray icons.
 
