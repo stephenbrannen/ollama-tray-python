@@ -43,5 +43,7 @@ search-path = ["."]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--strict-markers --strict-config --cov=ollama_tray --cov-report=term-missing --cov-fail-under=90"
+# The coverage gate lives in CI only. The Nix build runs pytest with this config, and the Nix
+# sandbox has no `pytest-cov`, so a `--cov` option here fails that build.
+addopts = "--strict-markers --strict-config"
 filterwarnings = ["error"]
