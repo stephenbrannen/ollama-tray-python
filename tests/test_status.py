@@ -1,5 +1,3 @@
-from datetime import UTC, datetime
-
 from pytest import mark
 
 from ollama_tray.client import LoadedModel, OllamaUnavailable
@@ -9,7 +7,7 @@ HOST = "http://localhost:11434"
 
 
 def make_model(name: str, size_vram: int) -> LoadedModel:
-    return LoadedModel(name=name, size_vram=size_vram, expires_at=datetime(2026, 1, 1, tzinfo=UTC))
+    return LoadedModel(name=name, size_vram=size_vram)
 
 
 @mark.parametrize(
