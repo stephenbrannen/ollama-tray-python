@@ -7,6 +7,7 @@ import queue
 import sys
 import threading
 from collections.abc import Callable
+from dataclasses import dataclass
 from importlib.metadata import version
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal, Slot
@@ -23,10 +24,12 @@ from ollama_tray.client import (
 from ollama_tray.status import (
     TrayStatus,
     escape_lines,
+    is_kept_loaded,
     menu_label_text,
     shorten,
     status_from_result,
     tooltip_text,
+    utc_now,
 )
 
 logger = logging.getLogger(__name__)
@@ -62,26 +65,44 @@ def draw_icon(status: TrayStatus) -> QIcon:
     return QIcon(pixmap)
 
 
+@dataclass(frozen=True)
+class MenuActions:
+    on_stop: Callable[[str], None]
+    on_keep_loaded: Callable[[str], None]
+    on_stop_all: Callable[[], None]
+    on_refresh: Callable[[], None]
+    on_quit: Callable[[], None]
+
+
 def populate_menu(
-    menu: QMenu,
-    models: list[LoadedModel],
-    on_stop: Callable[[str], None],
-    on_stop_all: Callable[[], None],
-    on_refresh: Callable[[], None],
-    on_quit: Callable[[], None],
+    menu: QMenu, models: list[LoadedModel], keepable: list[str], actions: MenuActions
 ) -> None:
+    # The submenu is a child of `menu`, and `clear` does not delete it, so every rebuild would
+    # leak one.
+    for old_submenu in menu.findChildren(QMenu, options=Qt.FindChildOption.FindDirectChildrenOnly):
+        old_submenu.deleteLater()
     menu.clear()
     for model in models:
         stop_action = menu.addAction(f"Stop {menu_label_text(model.name)}")
         # `name=model.name` binds this model now. A plain closure would read the loop variable
         # later and stop the last model every time. `_checked` takes the bool that Qt sends.
-        stop_action.triggered.connect(lambda _checked=False, name=model.name: on_stop(name))
+        stop_action.triggered.connect(lambda _checked=False, name=model.name: actions.on_stop(name))
     if len(models) > 1:
-        menu.addAction("Stop all").triggered.connect(lambda _checked=False: on_stop_all())
+        menu.addAction("Stop all").triggered.connect(lambda _checked=False: actions.on_stop_all())
+    if keepable:
+        # Some PySide6 builds leave `addMenu(str)` owned by Python, which deletes the submenu once
+        # this function returns. A parent passed to the constructor always keeps it alive.
+        keep_menu = QMenu("Keep loaded", menu)
+        menu.addMenu(keep_menu)
+        for name in keepable:
+            keep_action = keep_menu.addAction(menu_label_text(name))
+            keep_action.triggered.connect(
+                lambda _checked=False, name=name: actions.on_keep_loaded(name)
+            )
     if models:
         menu.addSeparator()
-    menu.addAction("Refresh now").triggered.connect(lambda _checked=False: on_refresh())
-    menu.addAction("Quit").triggered.connect(lambda _checked=False: on_quit())
+    menu.addAction("Refresh now").triggered.connect(lambda _checked=False: actions.on_refresh())
+    menu.addAction("Quit").triggered.connect(lambda _checked=False: actions.on_quit())
 
 
 class _PollSignals(QObject):
@@ -93,6 +114,11 @@ class _PollSignals(QObject):
 class _StopSignals(QObject):
     failed = Signal(str)
     finished = Signal(list)
+
+
+class _KeepSignals(QObject):
+    failed = Signal(str)
+    finished = Signal(str)
 
 
 class TrayController(QObject):
@@ -113,12 +139,13 @@ class TrayController(QObject):
         self._client = client
         self._host = host
         self._models: list[LoadedModel] = []
-        self._menu_names: tuple[str, ...] | None = None
+        self._menu_key: tuple[tuple[str, ...], tuple[str, ...]] | None = None
         self._menu_open = False
         self._menu_rebuild_pending = False
         self._poll_in_flight = False
         self._poll_again = False
         self._unloading: set[str] = set()
+        self._keeping: set[str] = set()
         # The worker reads this between models, so it is a thread-safe event, not a plain bool.
         self._shutting_down = threading.Event()
         self._status: TrayStatus | None = None
@@ -129,7 +156,7 @@ class TrayController(QObject):
         self._icons = {status: draw_icon(status) for status in TrayStatus}
 
         # The client's `requests.Session` is not guaranteed thread-safe, so one worker thread
-        # makes every client call (poll and stop) run one at a time.
+        # makes every client call (poll, stop and keep loaded) run one at a time.
         self._jobs: queue.Queue[Callable[[], None] | None] = queue.Queue()
         # A daemon thread cannot hold the process open while it waits on a hung server. Qt's
         # `QThreadPool` joins its threads on exit, which delayed quitting by 10 s.
@@ -145,6 +172,9 @@ class TrayController(QObject):
         self._stop_signals = _StopSignals(self)
         self._stop_signals.failed.connect(self._on_stop_failed)
         self._stop_signals.finished.connect(self._on_stop_finished)
+        self._keep_signals = _KeepSignals(self)
+        self._keep_signals.failed.connect(self._on_keep_failed)
+        self._keep_signals.finished.connect(self._on_keep_finished)
 
         self._menu = menu if menu is not None else QMenu()
         self._menu.aboutToShow.connect(self._on_menu_shown)
@@ -244,6 +274,27 @@ class TrayController(QObject):
                 self._stop_signals.failed.emit("\n".join(failures))
             self._stop_signals.finished.emit(names)
 
+    def keep_loaded(self, name: str) -> None:
+        # A second click on the same model would queue another request behind the first.
+        if name in self._keeping or self._shutting_down.is_set():
+            return
+        self._keeping.add(name)
+        self._jobs.put(lambda: self._keep_one_loaded(name))
+
+    def _keep_one_loaded(self, name: str) -> None:
+        try:
+            if self._shutting_down.is_set():
+                return
+            try:
+                self._client.keep_loaded(name)
+            # Catch everything, not only `OllamaUnavailable`, so the worker thread survives.
+            except Exception as error:
+                logger.warning("Could not keep %s loaded: %s", shorten(name), shorten(str(error)))
+                self._keep_signals.failed.emit(f"{name}: {error}")
+        finally:
+            # The name must always be released, or that model could never be kept again.
+            self._keep_signals.finished.emit(name)
+
     def apply_result(self, result: list[LoadedModel] | OllamaUnavailable | None) -> None:
         """Show a poll result. `None` means the first poll has not returned yet."""
         if result is None:
@@ -274,8 +325,12 @@ class TrayController(QObject):
         self._tray.setIcon(self._icons[status])
 
     def _rebuild_menu_if_changed(self, models: list[LoadedModel]) -> None:
-        names = tuple(model.name for model in models)
-        if names == self._menu_names:
+        now = utc_now()
+        keepable = [model.name for model in models if not is_kept_loaded(model.expires_at, now)]
+        # A model that becomes kept loaded keeps its name, so the names alone cannot tell that
+        # its Keep loaded entry must go.
+        key = (tuple(model.name for model in models), tuple(keepable))
+        if key == self._menu_key:
             self._menu_rebuild_pending = False
             return
         # Rebuilding while the menu is open would make it flicker, and would delete the action
@@ -284,14 +339,18 @@ class TrayController(QObject):
             self._menu_rebuild_pending = True
             return
         self._menu_rebuild_pending = False
-        self._menu_names = names
+        self._menu_key = key
         populate_menu(
             self._menu,
             models,
-            on_stop=lambda name: self.stop_models([name]),
-            on_stop_all=lambda: self.stop_models([model.name for model in self._models]),
-            on_refresh=self.refresh,
-            on_quit=QApplication.quit,
+            keepable,
+            MenuActions(
+                on_stop=lambda name: self.stop_models([name]),
+                on_keep_loaded=self.keep_loaded,
+                on_stop_all=lambda: self.stop_models([model.name for model in self._models]),
+                on_refresh=self.refresh,
+                on_quit=QApplication.quit,
+            ),
         )
 
     @Slot()
@@ -344,8 +403,24 @@ class TrayController(QObject):
     @Slot(list)
     def _on_stop_finished(self, names: list[str]) -> None:
         self._unloading.difference_update(names)
-        # A poll that started before the unload finished can still report the model as loaded,
-        # so a poll in flight is followed by one more instead of being trusted.
+        self._poll_after_change()
+
+    @Slot(str)
+    def _on_keep_failed(self, message: str) -> None:
+        self._tray.showMessage(
+            "Could not keep model loaded",
+            escape_lines(message),
+            QSystemTrayIcon.MessageIcon.Warning,
+        )
+
+    @Slot(str)
+    def _on_keep_finished(self, name: str) -> None:
+        self._keeping.discard(name)
+        self._poll_after_change()
+
+    def _poll_after_change(self) -> None:
+        # A poll that started before the change finished can still report the old state, so a
+        # poll in flight is followed by one more instead of being trusted.
         if self._poll_in_flight:
             self._poll_again = True
         else:

@@ -15,11 +15,12 @@ Supported platforms: Linux on x86_64 and aarch64, on X11 or Wayland, with a desk
 Right-click the icon.
 
 * `Stop <model>`: unloads that model. One entry per loaded model.
+* `Keep loaded` > `<model>`: keeps that model loaded until you stop it, without changing the server's keep-alive setting. Lists the models that are not already kept loaded, and is hidden when there are none.
 * `Stop all`: unloads every loaded model. Shown when two or more are loaded.
 * `Refresh now`: checks the server immediately.
 * `Quit`: exits.
 
-If a stop fails, a notification shows the reason.
+If a stop or a keep-loaded request fails, a notification shows the reason.
 
 ## Keeping models loaded
 

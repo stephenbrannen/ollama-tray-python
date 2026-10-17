@@ -265,6 +265,32 @@ def test_unload_posts_keep_alive_zero_with_its_own_timeout(
     assert len(responses.calls) == 1
 
 
+def test_keep_loaded_posts_keep_alive_minus_one_with_the_unload_timeout(
+    client: OllamaClient, responses: RequestsMock
+) -> None:
+    responses.post(
+        f"{HOST}/api/generate",
+        json={"done": True},
+        match=[
+            matchers.json_params_matcher({"model": "llama3:8b", "keep_alive": -1}),
+            matchers.request_kwargs_matcher({"timeout": 10}),
+        ],
+    )
+
+    client.keep_loaded("llama3:8b")
+
+    assert len(responses.calls) == 1
+
+
+def test_keep_loaded_raises_unavailable_on_server_error(
+    client: OllamaClient, responses: RequestsMock
+) -> None:
+    responses.post(f"{HOST}/api/generate", status=500)
+
+    with raises(OllamaUnavailable):
+        client.keep_loaded("llama3:8b")
+
+
 def test_unload_raises_unavailable_on_server_error(
     client: OllamaClient, responses: RequestsMock
 ) -> None:

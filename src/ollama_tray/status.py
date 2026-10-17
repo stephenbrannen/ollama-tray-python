@@ -66,13 +66,17 @@ def plain_line(text: str) -> str:
     return shorten(plain_text(text))
 
 
+def is_kept_loaded(expires_at: datetime | None, now: datetime) -> bool:
+    return expires_at is not None and expires_at - now > KEPT_LOADED_AFTER
+
+
 def unload_text(expires_at: datetime | None, now: datetime) -> str:
     """Say when the server unloads a model on its own, or return `""` when that is unknown."""
     if expires_at is None:
         return ""
-    left = expires_at - now
-    if left > KEPT_LOADED_AFTER:
+    if is_kept_loaded(expires_at, now):
         return "kept loaded"
+    left = expires_at - now
     minutes = int(left.total_seconds() // 60)
     if minutes < 1:
         return "unloads in <1m"
