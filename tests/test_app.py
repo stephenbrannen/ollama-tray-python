@@ -479,7 +479,8 @@ def test_stop_failure_message_is_escaped_and_capped(harness: Harness) -> None:
     assert wait_for(lambda: controller._tray.showMessage.called, 2000)
     message = controller._tray.showMessage.call_args.args[1]
     assert message.startswith("a: &lt;a href=&quot;x&quot;&gt;click&lt;/a&gt;xxx")
-    assert len(message) <= 120 * 6
+    assert message.endswith("xxx...")
+    assert "<" not in message
 
 
 def test_reachability_changes_are_logged_once(harness: Harness, caplog: LogCaptureFixture) -> None:

@@ -5,7 +5,7 @@ from html import escape
 
 from ollama_tray.client import LoadedModel, OllamaUnavailable
 
-# The tooltip says "GB", and Ollama's own `ps` output uses decimal gigabytes too.
+# The tooltip says "GB", so this is decimal (10^9 bytes), not binary GiB.
 BYTES_PER_GB = 1_000_000_000
 # A long line would stretch the tooltip and notification across the screen.
 MAX_LINE_CHARACTERS = 120
