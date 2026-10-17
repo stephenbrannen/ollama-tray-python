@@ -1,6 +1,6 @@
 [project]
 name = "ollama-tray"
-version = "0.1.0"
+version = "0.2.0"
 description = "A Linux system tray icon that shows which models an Ollama server has loaded, and unloads them on demand."
 readme = "README.md"
 license = "MIT"

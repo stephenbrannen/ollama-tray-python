@@ -1,9 +1,9 @@
 import logging
+import signal
 import sys
 import time
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
-from importlib.metadata import version
 from threading import Event
 from typing import NamedTuple
 from unittest.mock import MagicMock, call, patch
@@ -14,7 +14,15 @@ from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 from pytest import CaptureFixture, LogCaptureFixture, MonkeyPatch, fixture, mark, raises
 from responses import RequestsMock
 
-from ollama_tray.app import MenuActions, TrayController, draw_icon, main, populate_menu
+from ollama_tray.app import (
+    MenuActions,
+    TrayController,
+    draw_icon,
+    interval_seconds,
+    main,
+    populate_menu,
+    quit_on_signals,
+)
 from ollama_tray.client import LoadedModel, OllamaClient, OllamaUnavailable
 from ollama_tray.status import TrayStatus
 from tests.fixtures import HOST, make_model
@@ -286,6 +294,7 @@ def test_stop_failure_is_reported_and_status_refreshed(
         ["--host", "gpu-box:notaport"],
         ["--host", "ftp://gpu-box"],
         ["--interval", "0"],
+        ["--interval", "0.99"],
         ["--interval", "-1"],
         ["--interval", "soon"],
         ["--interval", "nan"],
@@ -295,6 +304,7 @@ def test_stop_failure_is_reported_and_status_refreshed(
         "non-numeric-port",
         "ftp-scheme",
         "zero-interval",
+        "below-minimum-interval",
         "negative-interval",
         "non-numeric-interval",
         "nan-interval",
@@ -326,11 +336,16 @@ def test_main_exits_with_message_when_no_tray(
     assert "AppIndicator" in str(exit_info.value.code)
 
 
+@patch("ollama_tray.app.quit_on_signals")
 @patch("ollama_tray.app.TrayController")
 @patch("ollama_tray.app.QSystemTrayIcon.isSystemTrayAvailable", return_value=True)
 @patch("ollama_tray.app.QApplication")
 def test_main_starts_controller_and_exits_with_event_loop_code(
-    app: MagicMock, _available: MagicMock, controller_class: MagicMock, monkeypatch: MonkeyPatch
+    app: MagicMock,
+    _available: MagicMock,
+    controller_class: MagicMock,
+    quit_on_signals_mock: MagicMock,
+    monkeypatch: MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("sys.argv", ["ollama-tray", "--host", "gpu-box:8080", "--interval", "7"])
     app.return_value.exec.return_value = 3
@@ -343,6 +358,7 @@ def test_main_starts_controller_and_exits_with_event_loop_code(
     assert controller_class.call_args.args[1:] == ("http://gpu-box:8080", 7.0)
     controller = controller_class.return_value
     app.return_value.aboutToQuit.connect.assert_called_once_with(controller.shutdown)
+    quit_on_signals_mock.assert_called_once_with(app.return_value)
     controller.start.assert_called_once_with()
 
 
@@ -717,6 +733,7 @@ def test_failed_stop_is_logged(
     ids=["default", "verbose"],
 )
 @patch("ollama_tray.app.logging.basicConfig")
+@patch("ollama_tray.app.quit_on_signals")
 @patch("ollama_tray.app.TrayController")
 @patch("ollama_tray.app.QSystemTrayIcon.isSystemTrayAvailable", return_value=True)
 @patch("ollama_tray.app.QApplication")
@@ -724,6 +741,7 @@ def test_main_logs_to_stderr_at_the_requested_level(
     _app: MagicMock,
     _available: MagicMock,
     _controller: MagicMock,
+    _quit_on_signals: MagicMock,
     basic_config: MagicMock,
     monkeypatch: MonkeyPatch,
     argv: list[str],
@@ -738,8 +756,18 @@ def test_main_logs_to_stderr_at_the_requested_level(
     assert basic_config.call_args.kwargs["stream"] is sys.stderr
 
 
-def test_main_prints_the_package_version(
-    monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
+@mark.parametrize(
+    ("raw", "expected"),
+    [("1", 1.0), ("2.5", 2.5)],
+    ids=["minimum", "fractional"],
+)
+def test_interval_seconds_accepts_values_from_the_minimum(raw: str, expected: float) -> None:
+    assert interval_seconds(raw) == expected
+
+
+@patch("ollama_tray.app.build_version", return_value="abc1234")
+def test_main_prints_the_build_version(
+    _build_version: MagicMock, monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr("sys.argv", ["ollama-tray", "--version"])
 
@@ -747,4 +775,32 @@ def test_main_prints_the_package_version(
         main()
 
     assert exit_info.value.code == 0
-    assert capsys.readouterr().out == f"ollama-tray {version('ollama-tray')}\n"
+    assert capsys.readouterr().out == "ollama-tray abc1234\n"
+
+
+@fixture
+def restore_signal_handlers() -> Iterator[None]:
+    saved = {number: signal.getsignal(number) for number in (signal.SIGINT, signal.SIGTERM)}
+    yield
+    for number, handler in saved.items():
+        signal.signal(number, handler)
+
+
+@mark.parametrize("signal_number", [signal.SIGINT, signal.SIGTERM], ids=["sigint", "sigterm"])
+@patch.object(QApplication, "quit")
+def test_quit_on_signals_quits_the_app_and_wakes_the_event_loop(
+    quit_app: MagicMock,
+    qapp: QApplication,
+    restore_signal_handlers: None,
+    signal_number: signal.Signals,
+) -> None:
+    timers_before = len(qapp.findChildren(QTimer))
+
+    quit_on_signals(qapp)
+    signal.raise_signal(signal_number)
+
+    quit_app.assert_called_once_with()
+    timer = qapp.findChildren(QTimer)[timers_before]
+    assert timer.isActive()
+    assert timer.interval() == 200
+    timer.deleteLater()

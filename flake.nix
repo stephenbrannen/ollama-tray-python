@@ -96,6 +96,9 @@
 
             postInstall = ''
               install -Dm644 ${./ollama-tray.desktop} $out/share/applications/ollama-tray.desktop
+              # Nix builds have no release tag, so `--version` reads the commit from this file.
+              printf '%s\n' '${self.shortRev or self.dirtyShortRev or "dirty"}' \
+                > $out/${pythonPackages.python.sitePackages}/ollama_tray/_build_version
             '';
 
             meta = {
