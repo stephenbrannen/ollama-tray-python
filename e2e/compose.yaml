@@ -1,0 +1,30 @@
+# Run with `e2e/run.sh` from the repo root.
+name: ollama-tray-e2e
+
+services:
+  ollama:
+    image: ollama/ollama:0.40.5@sha256:5d3a2f25f9825628daba94dc0b1d421c7d57d6c03ae5faa9ba050e058bab8241
+    volumes:
+      # Keeps the pulled model between local runs.
+      - models:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  tray:
+    # `xvfb-run` waits for a signal from Xvfb that never arrives when it runs as process 1.
+    init: true
+    build:
+      context: ..
+      dockerfile: e2e/Dockerfile
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_URL: http://ollama:11434
+      E2E_MODEL: smollm2:135m
+
+volumes:
+  models:

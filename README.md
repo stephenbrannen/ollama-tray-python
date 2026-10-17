@@ -103,6 +103,14 @@ uv run pre-commit install
 
 The pre-commit hooks run ruff and pyrefly on every commit.
 
+### End-to-end test
+
+```sh
+e2e/run.sh
+```
+
+This needs Docker with Compose. It starts a real Ollama server and a test container with Xvfb, a session D-Bus and a stub tray host. The test reads the icon, tooltip and menu over D-Bus the way a desktop panel does, clicks `Stop <model>`, and kills the TCP proxy (`socat`) between the tray and Ollama to show the unreachable state. The test container has no Docker socket. The first run downloads `smollm2:135m` into a Docker volume, and later runs reuse it. `uv run pytest` does not collect these tests.
+
 Modules in `src/ollama_tray/`:
 
 * `client.py`: the Ollama HTTP client and `resolve_host`. No GUI code.
