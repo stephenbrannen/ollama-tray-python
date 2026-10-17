@@ -34,6 +34,7 @@
             dependencies = with pythonPackages; [
               pyside6
               requests
+              urllib3
             ];
 
             # nixpkgs ships one combined `pyside6` package and no `pyside6-essentials`, so the
