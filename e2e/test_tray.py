@@ -14,7 +14,7 @@ from conftest import PROXY_URL
 GREY = "#8b949e"
 GREEN = "#2ea043"
 RED = "#da3633"
-# Twenty app polls at the fixture's 0.5 s interval, so a slow runner still passes.
+# Ten app polls at the fixture's 1 s interval, so a slow runner still passes.
 UPDATE_SECONDS = 10
 # A correct unload sends `keep_alive: 0`, and Ollama evicted the model in about 25 ms here.
 # `keep_alive: 1` keeps it for one second after the request, so the bound sits well between.
