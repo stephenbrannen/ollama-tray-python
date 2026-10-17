@@ -29,8 +29,8 @@ def resolve_host(flag: str | None) -> str:
     A missing scheme means `http://`, a missing host means `127.0.0.1`, and a path after
     the host is kept without its trailing slash. An invalid port raises `ValueError`.
     The host is not `localhost` because that can resolve to `::1` while Ollama listens on
-    IPv4. A missing port means 11434 on every scheme, unlike the `ollama` CLI, which uses
-    80 and 443 for `http` and `https`, because Ollama is almost never on those ports.
+    IPv4. A missing port means 11434 on every scheme. This differs from the `ollama` CLI,
+    which uses 80 and 443, because Ollama is almost never on those ports.
     """
     raw = flag or os.environ.get("OLLAMA_HOST") or DEFAULT_HOST
     parsed = urlsplit(raw if "://" in raw else f"http://{raw}")
