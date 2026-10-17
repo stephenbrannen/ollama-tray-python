@@ -5,8 +5,9 @@ from collections.abc import Callable, Iterator
 from importlib.metadata import version
 from threading import Event
 from typing import NamedTuple
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
+from PySide6.QtCore import QTimer
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 from pytest import CaptureFixture, LogCaptureFixture, MonkeyPatch, fixture, mark, raises
@@ -15,18 +16,16 @@ from responses import RequestsMock
 from ollama_tray.app import TrayController, draw_icon, main, populate_menu
 from ollama_tray.client import LoadedModel, OllamaClient, OllamaUnavailable
 from ollama_tray.status import TrayStatus
+from tests.fixtures import HOST, make_model
 
 GREY = "#8b949e"
 RED = "#da3633"
 RICH_TEXT_NAME = '<a href="x">click</a>'
+WAIT_MILLISECONDS = 2000
 
 
-def make_model(name: str) -> LoadedModel:
-    return LoadedModel(name=name, size_vram=4_700_000_000)
-
-
-def icon_color(controller: TrayController) -> str:
-    return controller._tray.icon().pixmap(64, 64).toImage().pixelColor(32, 32).name()
+def icon_color(tray: QSystemTrayIcon) -> str:
+    return tray.icon().pixmap(64, 64).toImage().pixelColor(32, 32).name()
 
 
 @fixture(scope="module")
@@ -36,17 +35,41 @@ def qapp() -> Iterator[QApplication]:
     yield app
 
 
-def wait_for(condition: Callable[[], bool], timeout_milliseconds: int) -> bool:
+def wait_for(condition: Callable[[], bool]) -> bool:
     """Pump the event loop until the worker's queued signals have been delivered."""
-    waited = 0
-    while not condition() and waited < timeout_milliseconds:
+    deadline = time.monotonic() + WAIT_MILLISECONDS / 1000
+    while not condition() and time.monotonic() < deadline:
         QTest.qWait(10)
-        waited += 10
     return condition()
 
 
 def labels(menu: QMenu) -> list[str]:
     return [action.text() for action in menu.actions() if not action.isSeparator()]
+
+
+class Built(NamedTuple):
+    controller: TrayController
+    tray: QSystemTrayIcon
+    menu: QMenu
+
+
+MakeController = Callable[[OllamaClient, float], Built]
+
+
+@fixture
+def make_controller(qapp: QApplication) -> Iterator[MakeController]:
+    controllers: list[TrayController] = []
+
+    def make(client: OllamaClient, interval_seconds: float) -> Built:
+        tray, menu = QSystemTrayIcon(), QMenu()
+        controller = TrayController(client, HOST, interval_seconds, tray, menu)
+        controllers.append(controller)
+        return Built(controller, tray, menu)
+
+    yield make
+    for controller in controllers:
+        controller.shutdown()
+        controller.worker_thread.join(2)
 
 
 @mark.parametrize(
@@ -95,24 +118,22 @@ def test_populate_menu_actions_call_their_callbacks(qapp: QApplication) -> None:
     on_quit.assert_called_once_with()
 
 
-def test_apply_result_updates_tooltip_and_menu(qapp: QApplication) -> None:
-    controller = TrayController(
-        OllamaClient("http://ollama.test:11434"), "http://ollama.test:11434", 5
-    )
+def test_apply_result_updates_tooltip_and_menu(make_controller: MakeController) -> None:
+    controller, tray, menu = make_controller(OllamaClient(HOST), 5)
 
-    assert controller._tray.toolTip() == "http://ollama.test:11434\nChecking..."
-    assert icon_color(controller) == GREY
+    assert tray.toolTip() == f"{HOST}\nChecking..."
+    assert icon_color(tray) == GREY
 
     controller.apply_result([make_model("llama3:8b")])
 
-    assert controller._tray.toolTip() == "http://ollama.test:11434\nllama3:8b (4.7 GB VRAM)"
-    assert labels(controller._menu) == ["Stop llama3:8b", "Refresh now", "Quit"]
+    assert tray.toolTip() == f"{HOST}\nllama3:8b (4.7 GB VRAM)"
+    assert labels(menu) == ["Stop llama3:8b", "Refresh now", "Quit"]
 
     controller.apply_result(OllamaUnavailable("down"))
 
-    assert controller._tray.toolTip() == "http://ollama.test:11434\nUnreachable: down"
-    assert icon_color(controller) == RED
-    assert labels(controller._menu) == ["Refresh now", "Quit"]
+    assert tray.toolTip() == f"{HOST}\nUnreachable: down"
+    assert icon_color(tray) == RED
+    assert labels(menu) == ["Refresh now", "Quit"]
 
 
 @mark.parametrize(
@@ -132,18 +153,11 @@ def test_draw_icon_fills_center_with_status_color(
     assert image.pixelColor(32, 32).name() == pixel
 
 
-@fixture
-def responses() -> Iterator[RequestsMock]:
-    with RequestsMock() as mock:
-        yield mock
-
-
 def test_refresh_applies_worker_result_on_gui_thread(
-    qapp: QApplication, responses: RequestsMock
+    make_controller: MakeController, responses: RequestsMock
 ) -> None:
-    host = "http://ollama.test:11434"
     responses.get(
-        f"{host}/api/ps",
+        f"{HOST}/api/ps",
         json={
             "models": [
                 {
@@ -154,43 +168,43 @@ def test_refresh_applies_worker_result_on_gui_thread(
             ]
         },
     )
-    controller = TrayController(OllamaClient(host), host, 5)
+    controller, tray, menu = make_controller(OllamaClient(HOST), 5)
 
     controller.refresh()
     controller.refresh()
-    expected = f"{host}\nllama3:8b (4.7 GB VRAM)"
+    expected = f"{HOST}\nllama3:8b (4.7 GB VRAM)"
 
-    assert wait_for(lambda: controller._tray.toolTip() == expected, 2000)
+    assert wait_for(lambda: tray.toolTip() == expected)
     assert len(responses.calls) == 1
-    assert labels(controller._menu) == ["Stop llama3:8b", "Refresh now", "Quit"]
+    assert labels(menu) == ["Stop llama3:8b", "Refresh now", "Quit"]
 
 
 @patch.object(OllamaClient, "loaded_models", side_effect=[RuntimeError("bug"), []])
-def test_poll_recovers_after_unexpected_error(loaded_models: MagicMock, qapp: QApplication) -> None:
-    host = "http://ollama.test:11434"
-    controller = TrayController(OllamaClient(host), host, 5)
+def test_poll_recovers_after_unexpected_error(
+    loaded_models: MagicMock, make_controller: MakeController
+) -> None:
+    controller, tray, _menu = make_controller(OllamaClient(HOST), 5)
 
     controller.refresh()
-    assert wait_for(lambda: controller._tray.toolTip().endswith("Unreachable: bug"), 2000)
+    assert wait_for(lambda: tray.toolTip().endswith("Unreachable: bug"))
     controller.refresh()
 
-    assert wait_for(lambda: controller._tray.toolTip().endswith("No model loaded"), 2000)
+    assert wait_for(lambda: tray.toolTip().endswith("No model loaded"))
     assert loaded_models.call_count == 2
 
 
+@patch.object(QSystemTrayIcon, "showMessage")
 def test_stop_failure_is_reported_and_status_refreshed(
-    qapp: QApplication, responses: RequestsMock
+    show_message: MagicMock, make_controller: MakeController, responses: RequestsMock
 ) -> None:
-    host = "http://ollama.test:11434"
-    responses.post(f"{host}/api/generate", status=500)
-    responses.get(f"{host}/api/ps", json={"models": []})
-    controller = TrayController(OllamaClient(host), host, 5)
-    controller._tray.showMessage = MagicMock()
+    responses.post(f"{HOST}/api/generate", status=500)
+    responses.get(f"{HOST}/api/ps", json={"models": []})
+    controller, tray, _menu = make_controller(OllamaClient(HOST), 5)
 
     controller.stop_models(["llama3:8b"])
 
-    assert wait_for(lambda: controller._tray.toolTip().endswith("No model loaded"), 2000)
-    controller._tray.showMessage.assert_called_once()
+    assert wait_for(lambda: tray.toolTip().endswith("No model loaded"))
+    show_message.assert_called_once()
 
 
 @mark.parametrize(
@@ -259,29 +273,29 @@ def test_main_starts_controller_and_exits_with_event_loop_code(
     controller.start.assert_called_once_with()
 
 
+@patch.object(QSystemTrayIcon, "showMessage")
 def test_stop_all_continues_past_a_failure_and_reports_each(
-    qapp: QApplication, responses: RequestsMock
+    show_message: MagicMock, make_controller: MakeController, responses: RequestsMock
 ) -> None:
-    host = "http://ollama.test:11434"
-    responses.post(f"{host}/api/generate", status=500)
-    responses.post(f"{host}/api/generate", status=200)
-    responses.get(f"{host}/api/ps", json={"models": []})
-    controller = TrayController(OllamaClient(host), host, 5)
-    controller._tray.showMessage = MagicMock()
+    responses.post(f"{HOST}/api/generate", status=500)
+    responses.post(f"{HOST}/api/generate", status=200)
+    responses.get(f"{HOST}/api/ps", json={"models": []})
+    controller, _tray, _menu = make_controller(OllamaClient(HOST), 5)
 
     controller.stop_models(["a", "b"])
 
-    assert wait_for(lambda: len(responses.calls) == 3, 2000)
-    assert wait_for(lambda: controller._tray.showMessage.called, 2000)
-    message = controller._tray.showMessage.call_args.args[1]
-    assert message.startswith("a: ") and "b:" not in message
+    assert wait_for(lambda: len(responses.calls) == 3)
+    assert wait_for(lambda: show_message.called)
+    message = show_message.call_args.args[1]
+    assert message.startswith("a: ")
+    assert "b:" not in message
 
 
 class StubClient(OllamaClient):
     """Answers instantly, or blocks on `gate` so a test controls when a call returns."""
 
     def __init__(self) -> None:
-        super().__init__("http://ollama.test:11434")
+        super().__init__(HOST)
         self.gate = Event()
         self.block_polls = False
         self.block_unloads = False
@@ -309,52 +323,73 @@ class StubClient(OllamaClient):
 class Harness(NamedTuple):
     controller: TrayController
     client: StubClient
+    tray: QSystemTrayIcon
+    menu: QMenu
 
 
 @fixture
-def harness(qapp: QApplication) -> Iterator[Harness]:
+def harness(make_controller: MakeController) -> Iterator[Harness]:
     client = StubClient()
-    controller = TrayController(client, "http://ollama.test:11434", 0.01)
-    yield Harness(controller, client)
+    controller, tray, menu = make_controller(client, 0.01)
+    yield Harness(controller, client, tray, menu)
     client.gate.set()
-    controller.shutdown()
-    controller._worker.join(2)
 
 
-def test_start_shows_tray_polls_and_keeps_polling_on_the_timer(harness: Harness) -> None:
-    controller, client = harness
-    controller._tray.show = MagicMock()
+# A test that lists this before `harness` builds its controller with an instant watchdog.
+@fixture
+def instant_watchdog(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setattr("ollama_tray.app.STATUS_TIMEOUT_SECONDS", 0)
+    monkeypatch.setattr("ollama_tray.app.POLL_WATCHDOG_MARGIN_SECONDS", 0)
+
+
+@patch.object(QTimer, "setInterval")
+def test_watchdog_waits_for_the_client_deadline_plus_a_margin(
+    set_interval: MagicMock, make_controller: MakeController
+) -> None:
+    make_controller(StubClient(), 5)
+
+    assert call(3000) in set_interval.call_args_list
+
+
+@patch.object(QSystemTrayIcon, "show")
+def test_start_shows_tray_polls_and_keeps_polling_on_the_timer(
+    show: MagicMock, harness: Harness
+) -> None:
+    controller, client, tray, _menu = harness
 
     controller.start()
 
-    controller._tray.show.assert_called_once_with()
-    assert wait_for(lambda: client.polls >= 3, 2000)
-    assert controller._tray.toolTip().endswith("No model loaded")
+    show.assert_called_once_with()
+    assert wait_for(lambda: client.polls >= 3)
+    assert tray.toolTip().endswith("No model loaded")
 
 
-def test_shutdown_returns_promptly_while_stop_all_is_hung(harness: Harness) -> None:
-    controller, client = harness
+@patch.object(QTimer, "stop")
+@patch.object(QSystemTrayIcon, "hide")
+def test_shutdown_returns_promptly_while_stop_all_is_hung(
+    hide: MagicMock, timer_stop: MagicMock, harness: Harness
+) -> None:
+    controller, client, _tray, _menu = harness
     client.block_unloads = True
     controller.stop_models(["a", "b"])
     assert client.unload_started.wait(2)
     controller.start()
-    controller._tray.hide = MagicMock()
 
     started = time.monotonic()
     controller.shutdown()
     elapsed = time.monotonic() - started
     client.gate.set()
-    controller._worker.join(2)
+    controller.worker_thread.join(2)
 
     assert elapsed < 1
-    assert controller._worker.daemon
+    assert controller.worker_thread.daemon
     assert client.unloaded == ["a"]
-    assert not controller._timer.isActive()
-    controller._tray.hide.assert_called_once_with()
+    assert timer_stop.call_count == 2
+    hide.assert_called_once_with()
 
 
 def test_shutdown_drops_queued_polls_and_refuses_new_work(harness: Harness) -> None:
-    controller, client = harness
+    controller, client, _tray, _menu = harness
     client.block_unloads = True
     controller.stop_models(["a"])
     assert client.unload_started.wait(2)
@@ -364,84 +399,84 @@ def test_shutdown_drops_queued_polls_and_refuses_new_work(harness: Harness) -> N
     controller.refresh()
     controller.stop_models(["b"])
     client.gate.set()
-    controller._worker.join(2)
+    controller.worker_thread.join(2)
 
     assert client.polls == 0
     assert client.unloaded == ["a"]
 
 
 def test_duplicate_stop_is_ignored_while_unload_is_in_flight(harness: Harness) -> None:
-    controller, client = harness
+    controller, client, _tray, _menu = harness
     client.block_unloads = True
 
     controller.stop_models(["a"])
     controller.stop_models(["a", "b"])
     client.gate.set()
 
-    assert wait_for(lambda: client.unloaded == ["a", "b"], 2000)
-    assert wait_for(lambda: not controller._unloading, 2000)
+    assert wait_for(lambda: client.unloaded == ["a", "b"])
+    # The follow-up poll runs only after the controller has released the stopped names.
+    assert wait_for(lambda: client.polls >= 1)
     controller.stop_models(["a"])
-    assert wait_for(lambda: client.unloaded == ["a", "b", "a"], 2000)
+    assert wait_for(lambda: client.unloaded == ["a", "b", "a"])
 
 
 def test_stop_finishing_during_a_poll_queues_exactly_one_follow_up_poll(harness: Harness) -> None:
-    controller, client = harness
+    controller, client, _tray, _menu = harness
 
     controller.stop_models(["a"])
     controller.stop_models(["b"])
     controller.refresh()
 
-    assert wait_for(lambda: client.polls == 2, 2000)
+    assert wait_for(lambda: client.polls == 2)
     QTest.qWait(50)
     assert client.unloaded == ["a", "b"]
     assert client.polls == 2
 
 
-def test_poll_in_flight_past_the_deadline_shows_not_responding(harness: Harness) -> None:
-    controller, client = harness
+def test_poll_in_flight_past_the_deadline_shows_not_responding(
+    instant_watchdog: None, harness: Harness
+) -> None:
+    controller, client, tray, _menu = harness
     client.block_polls = True
-    assert controller._watchdog.interval() == 3000
-    controller._watchdog.setInterval(10)
 
     controller.refresh()
 
-    assert wait_for(
-        lambda: controller._tray.toolTip().endswith("Unreachable: not responding"), 2000
-    )
-    assert icon_color(controller) == RED
+    assert wait_for(lambda: tray.toolTip().endswith("Unreachable: not responding"))
+    assert icon_color(tray) == RED
     client.models = [make_model("llama3:8b")]
     client.gate.set()
-    assert wait_for(lambda: controller._tray.toolTip().endswith("(4.7 GB VRAM)"), 2000)
-    assert not controller._watchdog.isActive()
+    assert wait_for(lambda: tray.toolTip().endswith("(4.7 GB VRAM)"))
 
 
 def test_poll_queued_behind_a_slow_stop_is_not_reported_as_not_responding(
-    harness: Harness,
+    instant_watchdog: None, harness: Harness
 ) -> None:
-    controller, client = harness
+    controller, client, tray, _menu = harness
     client.block_unloads = True
-    controller._watchdog.setInterval(10)
     controller.stop_models(["a"])
     assert client.unload_started.wait(2)
 
     controller.refresh()
     QTest.qWait(100)
 
-    assert "not responding" not in controller._tray.toolTip()
+    assert "not responding" not in tray.toolTip()
     client.gate.set()
-    assert wait_for(lambda: controller._tray.toolTip().endswith("No model loaded"), 2000)
+    assert wait_for(lambda: tray.toolTip().endswith("No model loaded"))
 
 
-def test_worker_keeps_running_after_an_unexpected_unload_error(harness: Harness) -> None:
-    controller, client = harness
+@patch.object(QSystemTrayIcon, "showMessage")
+def test_worker_keeps_running_after_an_unexpected_unload_error(
+    show_message: MagicMock, harness: Harness
+) -> None:
+    controller, client, tray, _menu = harness
     client.unload_error = RuntimeError("boom")
-    controller._tray.showMessage = MagicMock()
 
     controller.stop_models(["a"])
 
-    assert wait_for(lambda: controller._tray.toolTip().endswith("No model loaded"), 2000)
-    assert controller._tray.showMessage.call_args.args[1] == "a: boom"
-    assert not controller._unloading
+    assert wait_for(lambda: tray.toolTip().endswith("No model loaded"))
+    assert show_message.call_args.args[1] == "a: boom"
+    controller.stop_models(["a"])
+    assert wait_for(lambda: show_message.call_count == 2)
 
 
 @mark.parametrize("repeats", [1, 3], ids=["single", "repeated"])
@@ -449,7 +484,7 @@ def test_worker_keeps_running_after_an_unexpected_unload_error(harness: Harness)
 def test_icon_is_set_only_when_the_status_changes(
     set_icon: MagicMock, harness: Harness, repeats: int
 ) -> None:
-    controller, _client = harness
+    controller = harness.controller
     set_icon.reset_mock()
 
     for _ in range(repeats):
@@ -460,33 +495,34 @@ def test_icon_is_set_only_when_the_status_changes(
 
 
 def test_menu_is_not_rebuilt_while_open_and_catches_up_when_it_closes(harness: Harness) -> None:
-    controller, _client = harness
-    menu = controller._menu
+    controller, _client, _tray, menu = harness
 
     menu.aboutToShow.emit()
     controller.apply_result([make_model("llama3:8b")])
 
     assert labels(menu) == ["Refresh now", "Quit"]
     menu.aboutToHide.emit()
-    assert wait_for(lambda: labels(menu) == ["Stop llama3:8b", "Refresh now", "Quit"], 2000)
+    assert wait_for(lambda: labels(menu) == ["Stop llama3:8b", "Refresh now", "Quit"])
 
 
-def test_stop_failure_message_is_escaped_and_capped(harness: Harness) -> None:
-    controller, client = harness
+@patch.object(QSystemTrayIcon, "showMessage")
+def test_stop_failure_message_is_escaped_and_capped(
+    show_message: MagicMock, harness: Harness
+) -> None:
+    controller, client, _tray, _menu = harness
     client.unload_error = RuntimeError(f"{RICH_TEXT_NAME}{'x' * 10_000}")
-    controller._tray.showMessage = MagicMock()
 
     controller.stop_models(["a"])
 
-    assert wait_for(lambda: controller._tray.showMessage.called, 2000)
-    message = controller._tray.showMessage.call_args.args[1]
+    assert wait_for(lambda: show_message.called)
+    message = show_message.call_args.args[1]
     assert message.startswith("a: &lt;a href=&quot;x&quot;&gt;click&lt;/a&gt;xxx")
     assert message.endswith("xxx...")
     assert "<" not in message
 
 
 def test_reachability_changes_are_logged_once(harness: Harness, caplog: LogCaptureFixture) -> None:
-    controller, _client = harness
+    controller = harness.controller
     caplog.set_level(logging.INFO, logger="ollama_tray.app")
 
     controller.apply_result(OllamaUnavailable("down"))
@@ -495,19 +531,21 @@ def test_reachability_changes_are_logged_once(harness: Harness, caplog: LogCaptu
     controller.apply_result([make_model("llama3:8b")])
 
     assert [(record.levelname, record.getMessage()) for record in caplog.records] == [
-        ("WARNING", "Server http://ollama.test:11434 is unreachable: down"),
-        ("INFO", "Server http://ollama.test:11434 is reachable again"),
+        ("WARNING", f"Server {HOST} is unreachable: down"),
+        ("INFO", f"Server {HOST} is reachable again"),
     ]
 
 
-def test_failed_stop_is_logged(harness: Harness, caplog: LogCaptureFixture) -> None:
-    controller, client = harness
+@patch.object(QSystemTrayIcon, "showMessage")
+def test_failed_stop_is_logged(
+    show_message: MagicMock, harness: Harness, caplog: LogCaptureFixture
+) -> None:
+    controller, client, _tray, _menu = harness
     client.unload_error = RuntimeError("boom")
-    controller._tray.showMessage = MagicMock()
 
     controller.stop_models(["a"])
 
-    assert wait_for(lambda: controller._tray.showMessage.called, 2000)
+    assert wait_for(lambda: show_message.called)
     assert [(record.levelname, record.getMessage()) for record in caplog.records] == [
         ("WARNING", "Could not stop a: boom")
     ]

@@ -2,14 +2,10 @@ from pytest import mark
 
 from ollama_tray.client import LoadedModel, OllamaUnavailable
 from ollama_tray.status import TrayStatus, status_from_result, tooltip_text
+from tests.fixtures import HOST, make_model
 
-HOST = "http://localhost:11434"
 RICH_TEXT_NAME = '<a href="x">click</a>'
 ESCAPED_RICH_TEXT_NAME = "&lt;a href=&quot;x&quot;&gt;click&lt;/a&gt;"
-
-
-def make_model(name: str, size_vram: int) -> LoadedModel:
-    return LoadedModel(name=name, size_vram=size_vram)
 
 
 @mark.parametrize(
@@ -34,30 +30,30 @@ def test_status_from_result(
 @mark.parametrize(
     ("result", "expected"),
     [
-        (None, "http://localhost:11434\nChecking..."),
-        (OllamaUnavailable("down"), "http://localhost:11434\nUnreachable: down"),
-        (OllamaUnavailable(""), "http://localhost:11434\nUnreachable"),
-        (OllamaUnavailable("a: boom\nb: bang"), "http://localhost:11434\nUnreachable: a: boom"),
-        ([], "http://localhost:11434\nNo model loaded"),
+        (None, f"{HOST}\nChecking..."),
+        (OllamaUnavailable("down"), f"{HOST}\nUnreachable: down"),
+        (OllamaUnavailable(""), f"{HOST}\nUnreachable"),
+        (OllamaUnavailable("a: boom\nb: bang"), f"{HOST}\nUnreachable: a: boom"),
+        ([], f"{HOST}\nNo model loaded"),
         (
             [make_model("llama3:8b", 4_700_000_000), make_model("qwen3:4b", 2_549_000_000)],
-            "http://localhost:11434\nllama3:8b (4.7 GB VRAM)\nqwen3:4b (2.5 GB VRAM)",
+            f"{HOST}\nllama3:8b (4.7 GB VRAM)\nqwen3:4b (2.5 GB VRAM)",
         ),
         (
             [make_model(RICH_TEXT_NAME, 4_700_000_000)],
-            f"http://localhost:11434\n{ESCAPED_RICH_TEXT_NAME} (4.7 GB VRAM)",
+            f"{HOST}\n{ESCAPED_RICH_TEXT_NAME} (4.7 GB VRAM)",
         ),
         (
             [make_model("m" * 10_000, 4_700_000_000)],
-            f"http://localhost:11434\n{'m' * 117}... (4.7 GB VRAM)",
+            f"{HOST}\n{'m' * 117}... (4.7 GB VRAM)",
         ),
         (
             OllamaUnavailable(RICH_TEXT_NAME),
-            f"http://localhost:11434\nUnreachable: {ESCAPED_RICH_TEXT_NAME}",
+            f"{HOST}\nUnreachable: {ESCAPED_RICH_TEXT_NAME}",
         ),
         (
             OllamaUnavailable("e" * 10_000),
-            f"http://localhost:11434\nUnreachable: {'e' * 117}...",
+            f"{HOST}\nUnreachable: {'e' * 117}...",
         ),
     ],
     ids=[

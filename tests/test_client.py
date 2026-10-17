@@ -9,8 +9,8 @@ from requests import Timeout
 from responses import RequestsMock, matchers
 
 from ollama_tray.client import LoadedModel, OllamaClient, OllamaUnavailable, resolve_host
+from tests.fixtures import HOST
 
-BASE_URL = "http://ollama.test:11434"
 OVERSIZE_TOTAL_BYTES = 64 * 1024 * 1024
 
 
@@ -80,48 +80,60 @@ def loopback() -> Iterator[LoopbackServer]:
 
 
 @fixture
-def responses() -> Iterator[RequestsMock]:
-    with RequestsMock() as mock:
-        yield mock
-
-
-@fixture
 def client() -> OllamaClient:
-    return OllamaClient(BASE_URL)
+    return OllamaClient(HOST)
 
 
 @mark.parametrize(
     ("flag", "env", "expected"),
     [
-        param(None, None, "http://127.0.0.1:11434", id="default"),
-        param(None, "", "http://127.0.0.1:11434", id="empty-env-is-unset"),
-        param(None, "gpu-box", "http://gpu-box:11434", id="env-bare-host"),
-        param(None, "gpu-box:8080", "http://gpu-box:8080", id="env-host-and-port"),
-        param(None, "https://gpu-box", "https://gpu-box:11434", id="env-scheme-only"),
-        param(None, "HTTPS://Gpu-Box", "https://gpu-box:11434", id="uppercase-scheme"),
-        param(None, "https://gpu-box:8443", "https://gpu-box:8443", id="env-scheme-and-port"),
-        param(None, "http://gpu-box:8080/", "http://gpu-box:8080", id="trailing-slash"),
-        param(None, "0.0.0.0", "http://0.0.0.0:11434", id="wildcard-address"),
-        param(None, "[::1]:9000", "http://[::1]:9000", id="ipv6-with-port"),
+        param(None, {}, "http://127.0.0.1:11434", id="default"),
+        param(None, {"OLLAMA_HOST": ""}, "http://127.0.0.1:11434", id="empty-env-is-unset"),
+        param(None, {"OLLAMA_HOST": "gpu-box"}, "http://gpu-box:11434", id="env-bare-host"),
+        param(None, {"OLLAMA_HOST": "gpu-box:8080"}, "http://gpu-box:8080", id="env-host-and-port"),
+        param(
+            None, {"OLLAMA_HOST": "https://gpu-box"}, "https://gpu-box:11434", id="env-scheme-only"
+        ),
+        param(
+            None, {"OLLAMA_HOST": "HTTPS://Gpu-Box"}, "https://gpu-box:11434", id="uppercase-scheme"
+        ),
         param(
             None,
-            "http://box:8080/ollama/",
+            {"OLLAMA_HOST": "https://gpu-box:8443"},
+            "https://gpu-box:8443",
+            id="env-scheme-and-port",
+        ),
+        param(
+            None,
+            {"OLLAMA_HOST": "http://gpu-box:8080/"},
+            "http://gpu-box:8080",
+            id="trailing-slash",
+        ),
+        param(None, {"OLLAMA_HOST": "0.0.0.0"}, "http://0.0.0.0:11434", id="wildcard-address"),
+        param(None, {"OLLAMA_HOST": "[::1]:9000"}, "http://[::1]:9000", id="ipv6-with-port"),
+        param(
+            None,
+            {"OLLAMA_HOST": "http://box:8080/ollama/"},
             "http://box:8080/ollama",
             id="path-kept-trailing-slash-dropped",
         ),
-        param(None, "box/ollama", "http://box:11434/ollama", id="path-with-default-port"),
-        param(None, ":8080", "http://127.0.0.1:8080", id="port-only"),
-        param("flag-box:1", "env-box:2", "http://flag-box:1", id="flag-beats-env"),
-        param("", "env-box:2", "http://env-box:2", id="empty-flag-falls-to-env"),
+        param(
+            None,
+            {"OLLAMA_HOST": "box/ollama"},
+            "http://box:11434/ollama",
+            id="path-with-default-port",
+        ),
+        param(None, {"OLLAMA_HOST": ":8080"}, "http://127.0.0.1:8080", id="port-only"),
+        param("flag-box:1", {"OLLAMA_HOST": "env-box:2"}, "http://flag-box:1", id="flag-beats-env"),
+        param("", {"OLLAMA_HOST": "env-box:2"}, "http://env-box:2", id="empty-flag-falls-to-env"),
     ],
 )
 def test_resolve_host(
-    monkeypatch: MonkeyPatch, flag: str | None, env: str | None, expected: str
+    monkeypatch: MonkeyPatch, flag: str | None, env: dict[str, str], expected: str
 ) -> None:
-    if env is None:
-        monkeypatch.delenv("OLLAMA_HOST", raising=False)
-    else:
-        monkeypatch.setenv("OLLAMA_HOST", env)
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
 
     assert resolve_host(flag) == expected
 
@@ -172,7 +184,7 @@ def test_loaded_models_parses_api_ps(
     expected: list[LoadedModel],
 ) -> None:
     responses.get(
-        f"{BASE_URL}/api/ps",
+        f"{HOST}/api/ps",
         json=payload,
         match=[matchers.request_kwargs_matcher({"timeout": 2})],
     )
@@ -181,17 +193,18 @@ def test_loaded_models_parses_api_ps(
 
 
 @mark.parametrize(
-    "failure",
-    [RequestsConnectionError("refused"), Timeout("slow"), None],
+    "reply",
+    [
+        {"body": RequestsConnectionError("refused")},
+        {"body": Timeout("slow")},
+        {"status": 500},
+    ],
     ids=["connection-error", "timeout", "http-500"],
 )
 def test_loaded_models_raises_unavailable(
-    client: OllamaClient, responses: RequestsMock, failure: Exception | None
+    client: OllamaClient, responses: RequestsMock, reply: dict[str, Exception | int]
 ) -> None:
-    if failure is None:
-        responses.get(f"{BASE_URL}/api/ps", status=500)
-    else:
-        responses.get(f"{BASE_URL}/api/ps", body=failure)
+    responses.get(f"{HOST}/api/ps", **reply)
 
     with raises(OllamaUnavailable):
         client.loaded_models()
@@ -205,7 +218,7 @@ def test_loaded_models_raises_unavailable(
 def test_loaded_models_raises_unavailable_on_unexpected_payload(
     client: OllamaClient, responses: RequestsMock, body: str
 ) -> None:
-    responses.get(f"{BASE_URL}/api/ps", body=body)
+    responses.get(f"{HOST}/api/ps", body=body)
 
     with raises(OllamaUnavailable):
         client.loaded_models()
@@ -215,7 +228,7 @@ def test_unload_posts_keep_alive_zero_with_its_own_timeout(
     client: OllamaClient, responses: RequestsMock
 ) -> None:
     responses.post(
-        f"{BASE_URL}/api/generate",
+        f"{HOST}/api/generate",
         json={"done": True},
         match=[
             matchers.json_params_matcher({"model": "llama3:8b", "keep_alive": 0}),
@@ -231,7 +244,7 @@ def test_unload_posts_keep_alive_zero_with_its_own_timeout(
 def test_unload_raises_unavailable_on_server_error(
     client: OllamaClient, responses: RequestsMock
 ) -> None:
-    responses.post(f"{BASE_URL}/api/generate", status=500)
+    responses.post(f"{HOST}/api/generate", status=500)
 
     with raises(OllamaUnavailable):
         client.unload("llama3:8b")
