@@ -89,8 +89,8 @@ def populate_menu(
     menu.clear()
     for model in models:
         stop_action = menu.addAction(f"Stop {menu_label_text(model.name)}")
-        # `name=model.name` binds this model now. A plain closure would read the loop variable
-        # later and stop the last model every time. `_checked` takes the bool that Qt sends.
+        # `name=model.name` binds this model now, because a plain closure would stop the last
+        # model every time. `_checked` takes the bool that Qt sends.
         stop_action.triggered.connect(lambda _checked=False, name=model.name: actions.on_stop(name))
     if len(models) > 1:
         menu.addAction("Stop all").triggered.connect(lambda _checked=False: actions.on_stop_all())
@@ -174,8 +174,8 @@ class TrayController(QObject):
         self._worker = threading.Thread(target=self._work, name="ollama-client", daemon=True)
         self._worker.start()
 
-        # Signals are emitted on the worker thread. The receiving slots live on this object, so
-        # Qt queues them onto the GUI thread. Only the GUI thread may touch widgets.
+        # Signals are emitted on the worker thread, and Qt queues them onto the GUI thread
+        # through slots on this object. Only the GUI thread may touch widgets.
         self._poll_signals = _PollSignals(self)
         self._poll_signals.started.connect(self._on_poll_started)
         self._poll_signals.succeeded.connect(self._on_poll_succeeded)
@@ -245,8 +245,8 @@ class TrayController(QObject):
         self._jobs.put(self._poll)
 
     def _poll(self) -> None:
-        # The watchdog times the call, not the queue wait. A poll can queue behind a stop that
-        # takes several unload timeouts. A healthy server must not show as not responding.
+        # The watchdog times the call, not the queue wait. A poll can queue behind a slow stop,
+        # and a healthy server must not show as not responding.
         self._poll_signals.started.emit()
         try:
             models = self._client.loaded_models()

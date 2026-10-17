@@ -1,3 +1,5 @@
+# A plain `pre-commit install` then installs the pre-push hook as well.
+default_install_hook_types: [pre-commit, pre-push]
 repos:
   - repo: local
     hooks:
@@ -23,3 +25,11 @@ repos:
         language: system
         files: ^(pyproject\.toml|uv\.lock)$
         pass_filenames: false
+      # The coverage gate runs before a push, not on every commit, because it needs the whole suite.
+      - id: pytest-coverage
+        name: pytest with coverage gate
+        entry: uv run pytest --cov=ollama_tray --cov-fail-under=90 -q
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
