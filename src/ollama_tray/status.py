@@ -15,7 +15,6 @@ MAX_LINE_CHARACTERS = 120
 # `keep_alive: -1` makes Ollama report a time centuries away, not a special value. Anything
 # further out than this is a model that stays loaded.
 KEPT_LOADED_AFTER = timedelta(days=100 * 365)
-# Characters that are control (`Cc`) or invisible format (`Cf`) codes.
 UNSAFE_CATEGORIES = frozenset({"Cc", "Cf"})
 
 
