@@ -41,7 +41,10 @@
             # `pyside6` dependency above still provides QtCore, QtGui and QtWidgets.
             pythonRemoveDeps = [ "pyside6-essentials" ];
 
-            nativeCheckInputs = [ pythonPackages.pytestCheckHook ];
+            nativeCheckInputs = with pythonPackages; [
+              pytestCheckHook
+              responses
+            ];
             pythonImportsCheck = [ "ollama_tray" ];
             # Qt needs a platform plugin to import QtWidgets, and the build sandbox has no display.
             preCheck = ''
