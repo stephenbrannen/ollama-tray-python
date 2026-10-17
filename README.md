@@ -97,7 +97,7 @@ Or add it to a flake-based system configuration:
 ```
 
 * `nix run github:...` builds against the nixpkgs pinned in this repository and downloads its own copy of every dependency.
-* `inputs.nixpkgs.follows = "nixpkgs"` makes the package share your system's nixpkgs, so it reuses your Python and PySide6 instead.
+* `inputs.nixpkgs.follows = "nixpkgs"` makes the package share your system's nixpkgs, so it reuses your Python and Qt instead. It still compiles its own PySide6 (see below).
 * For a one-off run with your own nixpkgs, use `nix run --override-input nixpkgs nixpkgs github:stephenbrannen/ollama-tray-python`.
 * A shared nixpkgs must provide Python 3.13 and PySide6 6.x.
 * To use the cache for every build on the system, add it to your NixOS configuration. Without this, a system rebuild compiles the package, because Nix ignores the cache settings of a flake used as an input:
@@ -110,6 +110,8 @@ Or add it to a flake-based system configuration:
   ```
 
 * The cache is public, so anyone can download its contents. It holds only `x86_64-linux` builds made against this repository's pinned nixpkgs, so `aarch64-linux` and `inputs.nixpkgs.follows` builds still compile locally.
+* The package builds its own PySide6 with only the Qt modules the app uses, which cuts the download from about 2.2 GiB to about 750 MiB. A build that misses the cache compiles PySide6, which takes about 10 minutes on 4 cores. The build runs at most 4 compile jobs, because more can run out of memory on an 8 GiB machine.
+* The Nix package uses the Wayland support built into Qt 6.11. It still needs a manual check on GNOME and KDE Wayland desktops.
 * `nix flake update` refreshes the pinned nixpkgs.
 * GNOME needs the AppIndicator extension to show tray icons.
 
