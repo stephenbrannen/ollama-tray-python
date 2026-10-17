@@ -4,16 +4,17 @@ import argparse
 import logging
 import math
 import queue
+import signal
 import sys
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
-from importlib.metadata import version
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
+from ollama_tray.build_version import build_version
 from ollama_tray.client import (
     STATUS_TIMEOUT_SECONDS,
     LoadedModel,
@@ -442,18 +443,37 @@ HOST_HELP = (
     "server address as [http[s]://][host][:port][/path]. Defaults to OLLAMA_HOST, then "
     "http://127.0.0.1:11434. A missing port means 11434 on every scheme."
 )
-INTERVAL_HELP = "seconds between status checks, a finite number above 0 (default: %(default)s)"
+MIN_INTERVAL_SECONDS = 1.0
+INTERVAL_HELP = (
+    f"seconds between status checks, a finite number of at least {MIN_INTERVAL_SECONDS:g} "
+    "(default: %(default)s)"
+)
+# Python runs a signal handler only when the interpreter has control, and Qt's event loop
+# keeps it in C++. This timer wakes the interpreter often enough for Ctrl+C to feel immediate.
+SIGNAL_POLL_MILLISECONDS = 200
 
 
-def positive_seconds(raw: str) -> float:
+def interval_seconds(raw: str) -> float:
     try:
         seconds = float(raw)
     except ValueError:
         raise argparse.ArgumentTypeError(f"not a number: {raw!r}") from None
-    # `nan` and `inf` pass a plain `<= 0` check, and `QTimer` cannot take either.
-    if not math.isfinite(seconds) or seconds <= 0:
-        raise argparse.ArgumentTypeError("must be a finite number greater than 0")
+    # `nan` and `inf` pass a plain `< minimum` check, and `QTimer` cannot take either.
+    if not math.isfinite(seconds) or seconds < MIN_INTERVAL_SECONDS:
+        raise argparse.ArgumentTypeError(
+            f"must be a finite number of at least {MIN_INTERVAL_SECONDS:g}"
+        )
     return seconds
+
+
+def quit_on_signals(app: QApplication) -> None:
+    """Quit through the normal shutdown path on SIGINT or SIGTERM."""
+    for signal_number in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(signal_number, lambda _number, _frame: app.quit())
+    # The app owns the timer, so it lives as long as the event loop.
+    timer = QTimer(app)
+    timer.timeout.connect(lambda: None)
+    timer.start(SIGNAL_POLL_MILLISECONDS)
 
 
 def main() -> None:
@@ -463,7 +483,7 @@ def main() -> None:
     parser.add_argument("--host", help=HOST_HELP)
     parser.add_argument(
         "--interval",
-        type=positive_seconds,
+        type=interval_seconds,
         default=DEFAULT_INTERVAL_SECONDS,
         help=INTERVAL_HELP,
     )
@@ -472,7 +492,7 @@ def main() -> None:
         action="store_true",
         help="log at INFO level, which adds a line when the server recovers",
     )
-    parser.add_argument("--version", action="version", version=f"%(prog)s {version('ollama-tray')}")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {build_version()}")
     args = parser.parse_args()
     logging.basicConfig(
         stream=sys.stderr,
@@ -493,5 +513,6 @@ def main() -> None:
 
     controller = TrayController(OllamaClient(host), host, args.interval)
     app.aboutToQuit.connect(controller.shutdown)
+    quit_on_signals(app)
     controller.start()
     sys.exit(app.exec())

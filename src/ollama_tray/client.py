@@ -72,18 +72,20 @@ def resolve_host(flag: str | None) -> str:
     * A missing port means 11434 on every scheme, including `https`. The `ollama` CLI uses
       80 and 443 instead, but Ollama is almost never on those ports. Port 0 is rejected.
     * A path is kept without its trailing slash.
-    * A user name, password, query or fragment is rejected.
+    * A user name, password, query or fragment is rejected, even an empty one (`box?`).
+    * Spaces around the flag and around `OLLAMA_HOST` are ignored.
 
     Every rejection raises `ValueError`.
     """
-    raw = flag or os.environ.get("OLLAMA_HOST") or DEFAULT_HOST
+    raw = (flag or "").strip() or os.environ.get("OLLAMA_HOST", "").strip() or DEFAULT_HOST
     parsed = urlsplit(raw if "://" in raw else f"http://{raw}")
     if parsed.scheme not in ALLOWED_SCHEMES:
         raise ValueError(f"scheme must be http or https, not {parsed.scheme!r}")
     # Credentials in the address would be printed in the tooltip and sent on every request.
     if "@" in parsed.netloc:
         raise ValueError("user and password are not supported")
-    if parsed.query or parsed.fragment:
+    # `urlsplit` reports an empty query or fragment as "", the same as none, so check the text.
+    if "?" in raw or "#" in raw:
         raise ValueError("query and fragment are not supported")
     hostname = parsed.hostname or "127.0.0.1"
     if ":" in hostname:

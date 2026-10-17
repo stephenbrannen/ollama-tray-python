@@ -127,6 +127,12 @@ def client() -> OllamaClient:
         param(None, {"OLLAMA_HOST": ":8080"}, "http://127.0.0.1:8080", id="port-only"),
         param("flag-box:1", {"OLLAMA_HOST": "env-box:2"}, "http://flag-box:1", id="flag-beats-env"),
         param("", {"OLLAMA_HOST": "env-box:2"}, "http://env-box:2", id="empty-flag-falls-to-env"),
+        param("  flag-box:1\t", {}, "http://flag-box:1", id="flag-whitespace-trimmed"),
+        param(
+            None, {"OLLAMA_HOST": " env-box:2 "}, "http://env-box:2", id="env-whitespace-trimmed"
+        ),
+        param("  ", {"OLLAMA_HOST": "env-box:2"}, "http://env-box:2", id="blank-flag-falls-to-env"),
+        param(None, {"OLLAMA_HOST": "  "}, "http://127.0.0.1:11434", id="blank-env-is-unset"),
     ],
 )
 def test_resolve_host(
@@ -151,6 +157,9 @@ def test_resolve_host(
         param("http://user:secret@box:8080", id="userinfo-user-and-password"),
         param("box?x=1", id="query"),
         param("box#frag", id="fragment"),
+        param("box?", id="empty-query"),
+        param("box#", id="empty-fragment"),
+        param("  box?  ", id="empty-query-with-whitespace"),
     ],
 )
 def test_resolve_host_rejects_invalid_address(host: str) -> None:
