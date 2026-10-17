@@ -95,10 +95,10 @@ class TrayController(QObject):
         self._icons = {status: draw_icon(status) for status in TrayStatus}
 
         # `requests.Session` is not guaranteed thread-safe, so one worker thread makes every
-        # client call (poll and stop) run one at a time. It is a daemon thread because the
-        # process cannot exit while a non-daemon thread waits on a hung server, and Qt's
-        # `QThreadPool` joins its threads on exit (measured: 10 s).
+        # client call (poll and stop) run one at a time.
         self._jobs: queue.Queue[Callable[[], None] | None] = queue.Queue()
+        # A daemon thread cannot hold the process open while it waits on a hung server. Qt's
+        # `QThreadPool` joins its threads on exit, which delayed quitting by 10 s.
         self._worker = threading.Thread(target=self._work, name="ollama-client", daemon=True)
         self._worker.start()
 
