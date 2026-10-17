@@ -136,7 +136,7 @@ uv run pyrefly check
 uv run pre-commit install
 ```
 
-The pre-commit hooks run ruff and pyrefly on every commit.
+The pre-commit hooks run ruff and pyrefly on every commit. A pre-push hook runs pytest with the 90% coverage gate, the same gate CI enforces.
 
 ### Project standards
 

@@ -20,7 +20,7 @@ UNSAFE_CATEGORIES = frozenset({"Cc", "Cf"})
 
 class TrayStatus(Enum):
     # Shown only until the first poll returns. It is grey, not red, because the server has not
-    # failed yet. A failure and the not-responding watchdog still use red.
+    # failed yet; a failure or the watchdog still shows red.
     CHECKING = "checking"
     LOADED = "loaded"
     IDLE = "idle"
