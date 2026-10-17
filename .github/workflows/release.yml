@@ -57,15 +57,9 @@ jobs:
       - name: Write checksums
         working-directory: dist
         run: sha256sum -- *.tar.gz *.whl > checksums.txt
-      # --verify-tag refuses to create a tag, so the release can only attach to the pushed tag.
-      - name: Create the release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
-        run: gh release create "$TAG" dist/*.tar.gz dist/*.whl dist/checksums.txt --verify-tag --generate-notes --title "$TAG"
       # Artifact attestations need a public repository (or an Enterprise plan).
-      # On a private repository the step would fail after the release is public.
+      # On a private repository the step would fail, so skip it there.
+      # It runs before the release exists, so a failed attestation never leaves a public release without one.
       - if: ${{ !github.event.repository.private }}
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
@@ -73,6 +67,13 @@ jobs:
             dist/*.tar.gz
             dist/*.whl
             dist/checksums.txt
+      # --verify-tag refuses to create a tag, so the release can only attach to the pushed tag.
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" dist/*.tar.gz dist/*.whl dist/checksums.txt --verify-tag --generate-notes --title "$TAG"
 
   # A separate job keeps the cache token away from the release job's write
   # token, and gives it read-only permissions.
