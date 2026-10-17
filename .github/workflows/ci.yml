@@ -32,7 +32,7 @@ jobs:
       - run: uv run ruff check
       - run: uv run ruff format --check
       - run: uv run pyrefly check
-      - run: uv run pytest --cov=ollama_tray --cov-report=term-missing --cov-fail-under=90
+      - run: uv run pytest
 
   nix:
     runs-on: ubuntu-latest

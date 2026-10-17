@@ -260,7 +260,9 @@ def test_loaded_models_fails_within_deadline_on_trickling_server(
     with raises(OllamaUnavailable, match="took too long"):
         OllamaClient(loopback.url).loaded_models()
 
-    assert time.monotonic() - started < 1.5
+    # The server stops trickling after 3s, so a client without a deadline takes at least that long.
+    # The bound sits well above the 0.5s deadline to absorb a slow runner and well below 3s.
+    assert time.monotonic() - started < 2.5
 
 
 def test_loaded_models_fails_on_oversized_body_without_reading_it_all(

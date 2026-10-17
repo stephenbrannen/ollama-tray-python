@@ -43,5 +43,5 @@ search-path = ["."]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--strict-markers --strict-config"
+addopts = "--strict-markers --strict-config --cov=ollama_tray --cov-report=term-missing --cov-fail-under=90"
 filterwarnings = ["error"]
