@@ -396,6 +396,23 @@ def test_poll_in_flight_past_the_deadline_shows_not_responding(harness: Harness)
     assert not controller._watchdog.isActive()
 
 
+def test_poll_queued_behind_a_slow_stop_is_not_reported_as_not_responding(
+    harness: Harness,
+) -> None:
+    controller, client = harness
+    client.block_unloads = True
+    controller._watchdog.setInterval(10)
+    controller.stop_models(["a"])
+    assert client.unload_started.wait(2)
+
+    controller.refresh()
+    QTest.qWait(100)
+
+    assert "not responding" not in controller._tray.toolTip()
+    client.gate.set()
+    assert wait_for(lambda: controller._tray.toolTip().endswith("No model loaded"), 2000)
+
+
 def test_worker_keeps_running_after_an_unexpected_unload_error(harness: Harness) -> None:
     controller, client = harness
     client.unload_error = RuntimeError("boom")

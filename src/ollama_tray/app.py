@@ -70,6 +70,7 @@ def populate_menu(
 
 
 class _PollSignals(QObject):
+    started = Signal()
     succeeded = Signal(list)
     failed = Signal(str)
 
@@ -108,6 +109,7 @@ class TrayController(QObject):
         # Signals are emitted on the worker thread. The receiving slots live on this object,
         # so Qt queues them onto the GUI thread, which is the only place widgets are touched.
         self._poll_signals = _PollSignals(self)
+        self._poll_signals.started.connect(self._on_poll_started)
         self._poll_signals.succeeded.connect(self._on_poll_succeeded)
         self._poll_signals.failed.connect(self._on_poll_failed)
         self._stop_signals = _StopSignals(self)
@@ -165,10 +167,12 @@ class TrayController(QObject):
         if self._poll_in_flight or self._shutting_down.is_set():
             return
         self._poll_in_flight = True
-        self._watchdog.start()
         self._jobs.put(self._poll)
 
     def _poll(self) -> None:
+        # The watchdog times the call, not the queue wait. A poll can queue behind a stop that
+        # takes several unload timeouts, and a healthy server must not show as not responding.
+        self._poll_signals.started.emit()
         try:
             models = self._client.loaded_models()
         # Catch everything, not only `OllamaUnavailable`. A failure that emits no signal leaves
@@ -254,6 +258,10 @@ class TrayController(QObject):
             # `aboutToHide` fires before the chosen action runs, and a rebuild now would delete
             # that action first. A zero-delay timer runs the rebuild after the action.
             QTimer.singleShot(0, lambda: self._rebuild_menu_if_changed(self._models))
+
+    @Slot()
+    def _on_poll_started(self) -> None:
+        self._watchdog.start()
 
     @Slot()
     def _on_poll_stalled(self) -> None:
