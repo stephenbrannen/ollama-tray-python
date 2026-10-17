@@ -14,7 +14,7 @@ from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 from pytest import CaptureFixture, LogCaptureFixture, MonkeyPatch, fixture, mark, raises
 from responses import RequestsMock
 
-from ollama_tray.app import TrayController, draw_icon, main, populate_menu
+from ollama_tray.app import MenuActions, TrayController, draw_icon, main, populate_menu
 from ollama_tray.client import LoadedModel, OllamaClient, OllamaUnavailable
 from ollama_tray.status import TrayStatus
 from tests.fixtures import HOST, make_model
@@ -57,6 +57,23 @@ def keep_labels(menu: QMenu) -> list[str]:
         if action.text() == "Keep loaded" and isinstance(submenu, QMenu):
             return labels(submenu)
     return []
+
+
+class ActionMocks(NamedTuple):
+    on_stop: MagicMock
+    on_keep_loaded: MagicMock
+    on_stop_all: MagicMock
+    on_refresh: MagicMock
+    on_quit: MagicMock
+
+    @property
+    def actions(self) -> MenuActions:
+        return MenuActions(*self)
+
+
+@fixture
+def menu_actions() -> ActionMocks:
+    return ActionMocks(*(MagicMock() for _ in range(5)))
 
 
 class Built(NamedTuple):
@@ -129,23 +146,24 @@ def test_populate_menu_lists_stop_actions_and_keep_loaded_submenu(
     keepable: list[str],
     expected: list[str],
     expected_keep: list[str],
+    menu_actions: ActionMocks,
 ) -> None:
     menu = QMenu()
 
-    populate_menu(
-        menu, [make_model(name) for name in names], keepable, print, print, print, print, print
-    )
+    populate_menu(menu, [make_model(name) for name in names], keepable, menu_actions.actions)
 
     assert labels(menu) == expected
     assert keep_labels(menu) == expected_keep
 
 
-def test_populate_menu_rebuild_replaces_the_keep_loaded_submenu(qapp: QApplication) -> None:
+def test_populate_menu_rebuild_replaces_the_keep_loaded_submenu(
+    qapp: QApplication, menu_actions: ActionMocks
+) -> None:
     menu = QMenu()
     models = [make_model("a")]
-    populate_menu(menu, models, ["a"], print, print, print, print, print)
+    populate_menu(menu, models, ["a"], menu_actions.actions)
 
-    populate_menu(menu, models, ["a"], print, print, print, print, print)
+    populate_menu(menu, models, ["a"], menu_actions.actions)
 
     def direct_menus() -> int:
         return len(menu.findChildren(QMenu, options=Qt.FindChildOption.FindDirectChildrenOnly))
@@ -154,31 +172,23 @@ def test_populate_menu_rebuild_replaces_the_keep_loaded_submenu(qapp: QApplicati
     assert keep_labels(menu) == ["a"]
 
 
-def test_populate_menu_actions_call_their_callbacks(qapp: QApplication) -> None:
-    on_stop, on_keep_loaded, on_stop_all, on_refresh, on_quit = (MagicMock() for _ in range(5))
+def test_populate_menu_actions_call_their_callbacks(
+    qapp: QApplication, menu_actions: ActionMocks
+) -> None:
     menu = QMenu()
-    populate_menu(
-        menu,
-        [make_model("llama3:8b"), make_model("q&a")],
-        ["q&a"],
-        on_stop,
-        on_keep_loaded,
-        on_stop_all,
-        on_refresh,
-        on_quit,
-    )
+    populate_menu(menu, [make_model("llama3:8b"), make_model("q&a")], ["q&a"], menu_actions.actions)
 
     for action in menu.actions():
         action.trigger()
     (keep_menu,) = [m for a in menu.actions() if isinstance(m := a.menu(), QMenu)]
     keep_menu.actions()[0].trigger()
 
-    on_keep_loaded.assert_called_once_with("q&a")
-    on_stop.assert_any_call("llama3:8b")
-    on_stop.assert_any_call("q&a")
-    on_stop_all.assert_called_once_with()
-    on_refresh.assert_called_once_with()
-    on_quit.assert_called_once_with()
+    menu_actions.on_keep_loaded.assert_called_once_with("q&a")
+    menu_actions.on_stop.assert_any_call("llama3:8b")
+    menu_actions.on_stop.assert_any_call("q&a")
+    menu_actions.on_stop_all.assert_called_once_with()
+    menu_actions.on_refresh.assert_called_once_with()
+    menu_actions.on_quit.assert_called_once_with()
 
 
 def test_apply_result_updates_tooltip_and_menu(make_controller: MakeController) -> None:

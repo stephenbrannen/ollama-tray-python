@@ -7,6 +7,7 @@ import queue
 import sys
 import threading
 from collections.abc import Callable
+from dataclasses import dataclass
 from importlib.metadata import version
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal, Slot
@@ -64,15 +65,17 @@ def draw_icon(status: TrayStatus) -> QIcon:
     return QIcon(pixmap)
 
 
+@dataclass(frozen=True)
+class MenuActions:
+    on_stop: Callable[[str], None]
+    on_keep_loaded: Callable[[str], None]
+    on_stop_all: Callable[[], None]
+    on_refresh: Callable[[], None]
+    on_quit: Callable[[], None]
+
+
 def populate_menu(
-    menu: QMenu,
-    models: list[LoadedModel],
-    keepable: list[str],
-    on_stop: Callable[[str], None],
-    on_keep_loaded: Callable[[str], None],
-    on_stop_all: Callable[[], None],
-    on_refresh: Callable[[], None],
-    on_quit: Callable[[], None],
+    menu: QMenu, models: list[LoadedModel], keepable: list[str], actions: MenuActions
 ) -> None:
     # `addMenu` parents the submenu to `menu`, and `clear` does not delete it, so every rebuild
     # would leak one.
@@ -83,18 +86,20 @@ def populate_menu(
         stop_action = menu.addAction(f"Stop {menu_label_text(model.name)}")
         # `name=model.name` binds this model now. A plain closure would read the loop variable
         # later and stop the last model every time. `_checked` takes the bool that Qt sends.
-        stop_action.triggered.connect(lambda _checked=False, name=model.name: on_stop(name))
+        stop_action.triggered.connect(lambda _checked=False, name=model.name: actions.on_stop(name))
     if len(models) > 1:
-        menu.addAction("Stop all").triggered.connect(lambda _checked=False: on_stop_all())
+        menu.addAction("Stop all").triggered.connect(lambda _checked=False: actions.on_stop_all())
     if keepable:
         keep_menu = menu.addMenu("Keep loaded")
         for name in keepable:
             keep_action = keep_menu.addAction(menu_label_text(name))
-            keep_action.triggered.connect(lambda _checked=False, name=name: on_keep_loaded(name))
+            keep_action.triggered.connect(
+                lambda _checked=False, name=name: actions.on_keep_loaded(name)
+            )
     if models:
         menu.addSeparator()
-    menu.addAction("Refresh now").triggered.connect(lambda _checked=False: on_refresh())
-    menu.addAction("Quit").triggered.connect(lambda _checked=False: on_quit())
+    menu.addAction("Refresh now").triggered.connect(lambda _checked=False: actions.on_refresh())
+    menu.addAction("Quit").triggered.connect(lambda _checked=False: actions.on_quit())
 
 
 class _PollSignals(QObject):
@@ -336,11 +341,13 @@ class TrayController(QObject):
             self._menu,
             models,
             keepable,
-            on_stop=lambda name: self.stop_models([name]),
-            on_keep_loaded=self.keep_loaded,
-            on_stop_all=lambda: self.stop_models([model.name for model in self._models]),
-            on_refresh=self.refresh,
-            on_quit=QApplication.quit,
+            MenuActions(
+                on_stop=lambda name: self.stop_models([name]),
+                on_keep_loaded=self.keep_loaded,
+                on_stop_all=lambda: self.stop_models([model.name for model in self._models]),
+                on_refresh=self.refresh,
+                on_quit=QApplication.quit,
+            ),
         )
 
     @Slot()
