@@ -9,6 +9,9 @@ dependencies = [
     "requests~=2.34",
 ]
 
+[project.scripts]
+ollama-tray = "ollama_tray.app:main"
+
 [dependency-groups]
 dev = [
     "pytest>=9.1",
