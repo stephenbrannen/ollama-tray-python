@@ -267,6 +267,7 @@ class StubClient(OllamaClient):
         self.gate = Event()
         self.block_polls = False
         self.block_unloads = False
+        self.unload_error: Exception | None = None
         self.unload_started = Event()
         self.polls = 0
         self.unloaded: list[str] = []
@@ -280,6 +281,8 @@ class StubClient(OllamaClient):
 
     def unload(self, name: str) -> None:
         self.unload_started.set()
+        if self.unload_error:
+            raise self.unload_error
         if self.block_unloads:
             self.gate.wait()
         self.unloaded.append(name)
@@ -391,6 +394,18 @@ def test_poll_in_flight_past_the_deadline_shows_not_responding(harness: Harness)
     client.gate.set()
     assert wait_for(lambda: controller._tray.toolTip().endswith("(4.7 GB VRAM)"), 2000)
     assert not controller._watchdog.isActive()
+
+
+def test_worker_keeps_running_after_an_unexpected_unload_error(harness: Harness) -> None:
+    controller, client = harness
+    client.unload_error = RuntimeError("boom")
+    controller._tray.showMessage = MagicMock()
+
+    controller.stop_models(["a"])
+
+    assert wait_for(lambda: controller._tray.toolTip().endswith("No model loaded"), 2000)
+    assert controller._tray.showMessage.call_args.args[1] == "a: boom"
+    assert not controller._unloading
 
 
 @mark.parametrize("repeats", [1, 3], ids=["single", "repeated"])

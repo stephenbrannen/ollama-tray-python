@@ -1,6 +1,7 @@
 """System tray icon that shows which models an Ollama server has loaded."""
 
 import argparse
+import logging
 import math
 import queue
 import sys
@@ -19,6 +20,8 @@ from ollama_tray.client import (
     resolve_host,
 )
 from ollama_tray.status import TrayStatus, status_from_result, tooltip_text
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_INTERVAL_SECONDS = 5.0
 ICON_SIZE_PIXELS = 64
@@ -149,7 +152,12 @@ class TrayController(QObject):
 
     def _work(self) -> None:
         while (job := self._jobs.get()) is not None:
-            job()
+            # A job that raises must not end this thread, or every later poll and stop would
+            # wait in the queue forever and the icon would freeze.
+            try:
+                job()
+            except Exception:
+                logger.exception("Worker job failed")
 
     @Slot()
     def refresh(self) -> None:
@@ -187,7 +195,9 @@ class TrayController(QObject):
                     return
                 try:
                     self._client.unload(name)
-                except OllamaUnavailable as error:
+                # Catch everything, not only `OllamaUnavailable`, so one model's failure does
+                # not skip the models after it or end the worker thread.
+                except Exception as error:
                     failures.append(f"{name}: {error}")
         finally:
             # The names must always be released, or those models could never be stopped again.
