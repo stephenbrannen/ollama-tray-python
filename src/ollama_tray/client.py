@@ -152,8 +152,8 @@ class OllamaClient:
     ) -> bytes:
         """Return the response body, or raise `OllamaUnavailable`.
 
-        The `requests` timeout limits each socket wait, not the whole request, so a server
-        that sends one byte at a time could hold the call open forever. Once the headers
+        The `requests` timeout limits each socket wait, not the whole request. A server that
+        sends one byte at a time could hold the call open forever. Once the headers
         arrive, the body is read in chunks against a deadline and capped in size. The deadline
         is checked between chunks, so a stalled read can overrun it by one socket timeout.
         """

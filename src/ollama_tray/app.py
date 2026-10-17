@@ -213,8 +213,8 @@ class TrayController(QObject):
     def shutdown(self) -> None:
         """Stop all work without waiting on the server.
 
-        A call that is already in flight ends on its own deadline, and the worker thread is
-        not joined here, so a hung server cannot delay quitting.
+        A call that is already in flight ends on its own deadline. The worker thread is not
+        joined here, so a hung server cannot delay quitting.
         """
         self._shutting_down.set()
         self._timer.stop()
