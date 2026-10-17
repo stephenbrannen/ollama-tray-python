@@ -46,10 +46,10 @@ def escape_line(text: str) -> str:
 
 
 def plain_text(text: str) -> str:
-    """Make server-supplied text safe as one value in the tooltip, which is plain text.
+    """Make server-supplied text safe as one tooltip value, without HTML-escaping it.
 
-    The tooltip is not escaped. Desktops show it as plain text, so `&amp;` would appear literally.
-    A control character or a line break inside one value would break the one-value-per-line layout.
+    Desktops show the tooltip as plain text, so `&` and `<` must stay as they are. Control
+    characters and line breaks would break the one-value-per-line layout, so they are removed.
     """
     return CONTROL_CHARACTERS.sub("", LINE_BREAKS.sub(" ", text))
 
