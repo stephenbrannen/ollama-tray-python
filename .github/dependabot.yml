@@ -13,3 +13,22 @@ updates:
       interval: weekly
     cooldown:
       default-days: 2
+  # The end-to-end test pins its images by digest and its driver packages by hash.
+  - package-ecosystem: docker
+    directory: /e2e
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 2
+  - package-ecosystem: docker-compose
+    directory: /e2e
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 2
+  - package-ecosystem: pip
+    directory: /e2e
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 2

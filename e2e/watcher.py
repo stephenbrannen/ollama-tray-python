@@ -84,7 +84,13 @@ class Watcher:
             self._connection.send(new_method_return(message, "s", (INTROSPECTION_XML,)))
         elif member == "Get" and interface == PROPERTIES:
             _interface, name = message.body
-            self._connection.send(new_method_return(message, "v", (self.properties()[name],)))
+            value = self.properties().get(name)
+            if value is None:
+                # An uncaught `KeyError` would end the stub, and the tray would lose its host.
+                error = "org.freedesktop.DBus.Error.UnknownProperty"
+                self._connection.send(new_error(message, error, "s", (name,)))
+            else:
+                self._connection.send(new_method_return(message, "v", (value,)))
         elif member == "GetAll" and interface == PROPERTIES:
             self._connection.send(new_method_return(message, "a{sv}", (self.properties(),)))
         elif member == "RegisterStatusNotifierItem":
@@ -115,7 +121,7 @@ def main() -> None:
     connection = open_dbus_connection(bus="SESSION")
     watcher = Watcher(connection)
     request_name(connection, WATCHER_NAME)
-    # Some Qt versions also look for a host name on the bus, so the stub owns one.
+    # A desktop always has a host on the bus. Owning a host name keeps the bus close to that.
     request_name(connection, f"org.kde.StatusNotifierHost-{os.getpid()}")
     print("watcher: ready", file=sys.stderr, flush=True)
     while True:

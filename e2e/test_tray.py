@@ -47,7 +47,5 @@ def test_tray_follows_a_real_server(
     assert tray.icon_color() == GREY
 
     stop_container(ollama_container)
-    tooltip = wait_until(
-        tray.tooltip, lambda tip: "Unreachable" in tip.title, "unreachable", UPDATE_SECONDS
-    )
+    wait_until(tray.tooltip, lambda tip: "Unreachable" in tip.title, "unreachable", UPDATE_SECONDS)
     assert tray.icon_color() == RED

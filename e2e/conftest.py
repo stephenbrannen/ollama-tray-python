@@ -78,6 +78,10 @@ def watcher(bus: DBusConnection) -> Iterator[None]:
 
 @fixture
 def tray(watcher: None, bus: DBusConnection, ollama: Ollama, ollama_url: str) -> Iterator[Tray]:
+    """Start the app and return its registered item.
+
+    It requests `ollama` only so the model is pulled and unloaded before the app's first poll.
+    """
     environment = {**os.environ, "QT_QPA_PLATFORM": "xcb"}
     command = [APP, "--host", ollama_url, "--interval", APP_INTERVAL_SECONDS, "--verbose"]
     process = subprocess.Popen(command, env=environment)
