@@ -13,6 +13,55 @@
       forAllSystems = nixpkgs.lib.genAttrs systems;
     in
     {
+      packages = forAllSystems (
+        system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          pyproject = fromTOML (builtins.readFile ./pyproject.toml);
+        in
+        {
+          default = pkgs.python3Packages.buildPythonApplication {
+            pname = pyproject.project.name;
+            version = pyproject.project.version;
+            pyproject = true;
+            src = ./.;
+
+            build-system = [ pkgs.python3Packages.hatchling ];
+            dependencies = with pkgs.python3Packages; [
+              pyside6
+              requests
+            ];
+            # nixpkgs pins its own PySide6 and requests versions, which may sit outside
+            # the `~=` ranges in pyproject.toml.
+            pythonRelaxDeps = [
+              "pyside6"
+              "requests"
+            ];
+
+            nativeBuildInputs = [ pkgs.qt6.wrapQtAppsHook ];
+            # The Python wrapper is built by the Python hooks, so hand the Qt wrapper
+            # arguments to it instead of letting wrapQtAppsHook wrap the script twice.
+            dontWrapQtApps = true;
+            preFixup = ''
+              makeWrapperArgs+=("''${qtWrapperArgs[@]}")
+            '';
+
+            postInstall = ''
+              install -Dm644 ${./ollama-tray.desktop} $out/share/applications/ollama-tray.desktop
+            '';
+
+            meta.mainProgram = "ollama-tray";
+          };
+        }
+      );
+
+      apps = forAllSystems (system: {
+        default = {
+          type = "app";
+          program = "${self.packages.${system}.default}/bin/ollama-tray";
+        };
+      });
+
       devShells = forAllSystems (
         system:
         let
