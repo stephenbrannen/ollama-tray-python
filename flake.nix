@@ -31,6 +31,27 @@
           pkgs = nixpkgs.legacyPackages.${system};
           pyproject = fromTOML (builtins.readFile ./pyproject.toml);
           pythonPackages = pkgs.${pythonAttr + "Packages"};
+          # nixpkgs' pyside6 binds every Qt module, which makes the closure about 2.2 GiB.
+          # QtWebEngine alone is 469 MiB. The app uses only QtCore, QtGui and QtWidgets, and
+          # the tests add QtTest. So this build binds those four and links only qtbase.
+          pyside6Trimmed = pythonPackages.pyside6.overrideAttrs (old: {
+            # These are the required inputs of nixpkgs' pyside6 expression. If a nixpkgs
+            # update changes that list, copy the new required inputs here.
+            buildInputs = [
+              pkgs.qt6.qtbase
+              pythonPackages.ninja
+              pythonPackages.packaging
+              pythonPackages.setuptools
+            ];
+            # `MODULES` is a CMake option of the pyside6 source, not of nixpkgs.
+            cmakeFlags = old.cmakeFlags ++ [ "-DMODULES=Core;Gui;Widgets;Test" ];
+            # The generated bindings are large C++ files. With 18 parallel compile jobs, the
+            # build ran out of memory in 8 GiB. Four jobs fit there and match a GitHub runner.
+            # The ninja hook reads NIX_BUILD_CORES after preBuild runs.
+            preBuild = (old.preBuild or "") + ''
+              if [ "$NIX_BUILD_CORES" -gt 4 ]; then NIX_BUILD_CORES=4; fi
+            '';
+          });
         in
         {
           default = pythonPackages.buildPythonApplication {
@@ -40,15 +61,15 @@
             src = ./.;
 
             build-system = [ pythonPackages.hatchling ];
-            dependencies = with pythonPackages; [
-              pyside6
-              requests
-              urllib3
+            dependencies = [
+              pyside6Trimmed
+              pythonPackages.requests
+              pythonPackages.urllib3
             ];
 
             # nixpkgs ships one combined `pyside6` package and no `pyside6-essentials`, so the
             # runtime dependency check can never find the name pyproject.toml asks for. The
-            # `pyside6` dependency above still provides QtCore, QtGui and QtWidgets.
+            # `pyside6Trimmed` dependency above still provides QtCore, QtGui and QtWidgets.
             pythonRemoveDeps = [ "pyside6-essentials" ];
 
             nativeCheckInputs = with pythonPackages; [
@@ -62,12 +83,10 @@
             '';
 
             nativeBuildInputs = [ pkgs.qt6.wrapQtAppsHook ];
-            # wrapQtAppsHook reads the plugin path from qtbase; qtwayland adds the
-            # Wayland platform plugin for Wayland sessions.
-            buildInputs = [
-              pkgs.qt6.qtbase
-              pkgs.qt6.qtwayland
-            ];
+            # wrapQtAppsHook reads the plugin path from qtbase. Since Qt 6.11, qtbase ships the
+            # Wayland platform plugin. The 6.11 qtwayland package holds compositor libraries and
+            # window decorations, and a tray icon with no windows uses neither.
+            buildInputs = [ pkgs.qt6.qtbase ];
             # The Python wrapper is built by the Python hooks, so hand the Qt wrapper
             # arguments to it instead of letting wrapQtAppsHook wrap the script twice.
             dontWrapQtApps = true;
