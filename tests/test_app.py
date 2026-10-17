@@ -311,8 +311,20 @@ def test_stop_failure_is_reported_and_status_refreshed(
         "infinite-interval",
     ],
 )
+# If a bad argument were accepted, main would go on to start the app. These patches make that
+# fail the assertions below instead of creating a second `QApplication`.
+@patch("ollama_tray.app.quit_on_signals")
+@patch("ollama_tray.app.TrayController")
+@patch("ollama_tray.app.QSystemTrayIcon.isSystemTrayAvailable", return_value=True)
+@patch("ollama_tray.app.QApplication")
 def test_main_reports_bad_arguments_as_cli_error(
-    monkeypatch: MonkeyPatch, capsys: CaptureFixture[str], argv: list[str]
+    _app: MagicMock,
+    _available: MagicMock,
+    _controller: MagicMock,
+    _quit_on_signals: MagicMock,
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+    argv: list[str],
 ) -> None:
     monkeypatch.setattr("sys.argv", ["ollama-tray", *argv])
 
