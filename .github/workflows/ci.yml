@@ -15,6 +15,8 @@ jobs:
       QT_QPA_PLATFORM: offscreen
     steps:
       - uses: actions/checkout@v7
+      # PySide6 loads these system libraries at import, even on the offscreen platform.
+      - run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libglib2.0-0 libxkbcommon0 libfontconfig1 libdbus-1-3
       - uses: astral-sh/setup-uv@v7
       - run: uv sync --locked
       - run: uv run ruff check
