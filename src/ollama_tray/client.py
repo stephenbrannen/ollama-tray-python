@@ -43,12 +43,17 @@ class _PsPayload(TypedDict):
 def resolve_host(flag: str | None) -> str:
     """Return the server base URL from the flag, else `OLLAMA_HOST`, else the default.
 
-    A missing scheme means `http://`, a missing host means `127.0.0.1`, and a path after
-    the host is kept without its trailing slash. An invalid port, a scheme other than `http`
-    or `https`, userinfo, a query or a fragment raises `ValueError`.
-    The host is not `localhost` because that can resolve to `::1` while Ollama listens on
-    IPv4. A missing port means 11434 on every scheme. This differs from the `ollama` CLI,
-    which uses 80 and 443, because Ollama is almost never on those ports.
+    The address is `[http[s]://][host][:port][/path]`:
+
+    * A missing scheme means `http`. Any scheme other than `http` or `https` is rejected.
+    * A missing host means `127.0.0.1`, not `localhost`, because `localhost` can resolve to
+      `::1` while Ollama listens on IPv4.
+    * A missing port means 11434 on every scheme, including `https`. The `ollama` CLI uses
+      80 and 443 instead, but Ollama is almost never on those ports. Port 0 is rejected.
+    * A path is kept without its trailing slash.
+    * A user name, password, query or fragment is rejected.
+
+    Every rejection raises `ValueError`.
     """
     raw = flag or os.environ.get("OLLAMA_HOST") or DEFAULT_HOST
     parsed = urlsplit(raw if "://" in raw else f"http://{raw}")
@@ -72,6 +77,8 @@ def resolve_host(flag: str | None) -> str:
 class OllamaClient:
     def __init__(self, base_url: str) -> None:
         self._base_url = base_url.rstrip("/")
+        # `requests.Session` is not guaranteed thread-safe. The tray calls this client from one
+        # worker thread only, so the session can keep its connection open between polls.
         self._session = requests.Session()
 
     def loaded_models(self) -> list[LoadedModel]:

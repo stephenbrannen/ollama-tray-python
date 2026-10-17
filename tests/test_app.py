@@ -1,21 +1,32 @@
+import logging
+import sys
 import time
 from collections.abc import Callable, Iterator
+from importlib.metadata import version
 from threading import Event
 from typing import NamedTuple
 from unittest.mock import MagicMock, patch
 
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
-from pytest import CaptureFixture, MonkeyPatch, fixture, mark, raises
+from pytest import CaptureFixture, LogCaptureFixture, MonkeyPatch, fixture, mark, raises
 from responses import RequestsMock
 
 from ollama_tray.app import TrayController, draw_icon, main, populate_menu
 from ollama_tray.client import LoadedModel, OllamaClient, OllamaUnavailable
 from ollama_tray.status import TrayStatus
 
+GREY = "#8b949e"
+RED = "#da3633"
+RICH_TEXT_NAME = '<a href="x">click</a>'
+
 
 def make_model(name: str) -> LoadedModel:
     return LoadedModel(name=name, size_vram=4_700_000_000)
+
+
+def icon_color(controller: TrayController) -> str:
+    return controller._tray.icon().pixmap(64, 64).toImage().pixelColor(32, 32).name()
 
 
 @fixture(scope="module")
@@ -87,6 +98,9 @@ def test_apply_result_updates_tooltip_and_menu(qapp: QApplication) -> None:
         OllamaClient("http://ollama.test:11434"), "http://ollama.test:11434", 5
     )
 
+    assert controller._tray.toolTip() == "http://ollama.test:11434\nChecking..."
+    assert icon_color(controller) == GREY
+
     controller.apply_result([make_model("llama3:8b")])
 
     assert controller._tray.toolTip() == "http://ollama.test:11434\nllama3:8b (4.7 GB VRAM)"
@@ -95,15 +109,17 @@ def test_apply_result_updates_tooltip_and_menu(qapp: QApplication) -> None:
     controller.apply_result(OllamaUnavailable("down"))
 
     assert controller._tray.toolTip() == "http://ollama.test:11434\nUnreachable: down"
+    assert icon_color(controller) == RED
     assert labels(controller._menu) == ["Refresh now", "Quit"]
 
 
 @mark.parametrize(
     ("status", "pixel"),
     [
+        (TrayStatus.CHECKING, GREY),
         (TrayStatus.LOADED, "#2ea043"),
-        (TrayStatus.IDLE, "#8b949e"),
-        (TrayStatus.UNREACHABLE, "#da3633"),
+        (TrayStatus.IDLE, GREY),
+        (TrayStatus.UNREACHABLE, RED),
     ],
 )
 def test_draw_icon_fills_center_with_status_color(
@@ -390,6 +406,7 @@ def test_poll_in_flight_past_the_deadline_shows_not_responding(harness: Harness)
     assert wait_for(
         lambda: controller._tray.toolTip().endswith("Unreachable: not responding"), 2000
     )
+    assert icon_color(controller) == RED
     client.models = [make_model("llama3:8b")]
     client.gate.set()
     assert wait_for(lambda: controller._tray.toolTip().endswith("(4.7 GB VRAM)"), 2000)
@@ -450,3 +467,83 @@ def test_menu_is_not_rebuilt_while_open_and_catches_up_when_it_closes(harness: H
     assert labels(menu) == ["Refresh now", "Quit"]
     menu.aboutToHide.emit()
     assert wait_for(lambda: labels(menu) == ["Stop llama3:8b", "Refresh now", "Quit"], 2000)
+
+
+def test_stop_failure_message_is_escaped_and_capped(harness: Harness) -> None:
+    controller, client = harness
+    client.unload_error = RuntimeError(f"{RICH_TEXT_NAME}{'x' * 10_000}")
+    controller._tray.showMessage = MagicMock()
+
+    controller.stop_models(["a"])
+
+    assert wait_for(lambda: controller._tray.showMessage.called, 2000)
+    message = controller._tray.showMessage.call_args.args[1]
+    assert message.startswith("a: &lt;a href=&quot;x&quot;&gt;click&lt;/a&gt;xxx")
+    assert len(message) <= 120 * 6
+
+
+def test_reachability_changes_are_logged_once(harness: Harness, caplog: LogCaptureFixture) -> None:
+    controller, _client = harness
+    caplog.set_level(logging.INFO, logger="ollama_tray.app")
+
+    controller.apply_result(OllamaUnavailable("down"))
+    controller.apply_result(OllamaUnavailable("still down"))
+    controller.apply_result([])
+    controller.apply_result([make_model("llama3:8b")])
+
+    assert [(record.levelname, record.getMessage()) for record in caplog.records] == [
+        ("WARNING", "Server http://ollama.test:11434 is unreachable: down"),
+        ("INFO", "Server http://ollama.test:11434 is reachable again"),
+    ]
+
+
+def test_failed_stop_is_logged(harness: Harness, caplog: LogCaptureFixture) -> None:
+    controller, client = harness
+    client.unload_error = RuntimeError("boom")
+    controller._tray.showMessage = MagicMock()
+
+    controller.stop_models(["a"])
+
+    assert wait_for(lambda: controller._tray.showMessage.called, 2000)
+    assert [(record.levelname, record.getMessage()) for record in caplog.records] == [
+        ("WARNING", "Could not stop a: boom")
+    ]
+
+
+@mark.parametrize(
+    ("argv", "level"),
+    [([], logging.WARNING), (["--verbose"], logging.INFO)],
+    ids=["default", "verbose"],
+)
+@patch("ollama_tray.app.logging.basicConfig")
+@patch("ollama_tray.app.TrayController")
+@patch("ollama_tray.app.QSystemTrayIcon.isSystemTrayAvailable", return_value=True)
+@patch("ollama_tray.app.QApplication")
+def test_main_logs_to_stderr_at_the_requested_level(
+    _app: MagicMock,
+    _available: MagicMock,
+    _controller: MagicMock,
+    basic_config: MagicMock,
+    monkeypatch: MonkeyPatch,
+    argv: list[str],
+    level: int,
+) -> None:
+    monkeypatch.setattr("sys.argv", ["ollama-tray", *argv])
+
+    with raises(SystemExit):
+        main()
+
+    assert basic_config.call_args.kwargs["level"] == level
+    assert basic_config.call_args.kwargs["stream"] is sys.stderr
+
+
+def test_main_prints_the_package_version(
+    monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr("sys.argv", ["ollama-tray", "--version"])
+
+    with raises(SystemExit) as exit_info:
+        main()
+
+    assert exit_info.value.code == 0
+    assert capsys.readouterr().out == f"ollama-tray {version('ollama-tray')}\n"
