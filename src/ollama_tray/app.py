@@ -7,6 +7,7 @@ import queue
 import sys
 import threading
 from collections.abc import Callable
+from importlib.metadata import version
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
@@ -19,15 +20,26 @@ from ollama_tray.client import (
     OllamaUnavailable,
     resolve_host,
 )
-from ollama_tray.status import TrayStatus, status_from_result, tooltip_text
+from ollama_tray.status import (
+    TrayStatus,
+    escape_lines,
+    menu_label_text,
+    shorten,
+    status_from_result,
+    tooltip_text,
+)
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_INTERVAL_SECONDS = 5.0
 ICON_SIZE_PIXELS = 64
+# Space between the circle and the pixmap edge, so the antialiased rim is not clipped.
+ICON_MARGIN_PIXELS = 4
+GREY = "#8b949e"
 STATUS_COLORS = {
+    TrayStatus.CHECKING: GREY,
     TrayStatus.LOADED: "#2ea043",
-    TrayStatus.IDLE: "#8b949e",
+    TrayStatus.IDLE: GREY,
     TrayStatus.UNREACHABLE: "#da3633",
 }
 # The client deadline is checked between reads, so a poll can overrun it by one socket wait.
@@ -44,7 +56,8 @@ def draw_icon(status: TrayStatus) -> QIcon:
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
     painter.setBrush(QColor(STATUS_COLORS[status]))
     painter.setPen(Qt.PenStyle.NoPen)
-    painter.drawEllipse(4, 4, ICON_SIZE_PIXELS - 8, ICON_SIZE_PIXELS - 8)
+    diameter = ICON_SIZE_PIXELS - 2 * ICON_MARGIN_PIXELS
+    painter.drawEllipse(ICON_MARGIN_PIXELS, ICON_MARGIN_PIXELS, diameter, diameter)
     painter.end()
     return QIcon(pixmap)
 
@@ -59,7 +72,9 @@ def populate_menu(
 ) -> None:
     menu.clear()
     for model in models:
-        stop_action = menu.addAction(f"Stop {model.name}")
+        stop_action = menu.addAction(f"Stop {menu_label_text(model.name)}")
+        # `name=model.name` binds this model now. A plain closure would read the loop variable
+        # later and stop the last model every time. `_checked` takes the bool that Qt sends.
         stop_action.triggered.connect(lambda _checked=False, name=model.name: on_stop(name))
     if len(models) > 1:
         menu.addAction("Stop all").triggered.connect(lambda _checked=False: on_stop_all())
@@ -95,11 +110,14 @@ class TrayController(QObject):
         # The worker reads this between models, so it is a thread-safe event, not a plain bool.
         self._shutting_down = threading.Event()
         self._status: TrayStatus | None = None
+        # Only changes of this flag are logged, so a server that stays down logs once, not
+        # on every poll.
+        self._unreachable = False
         # A `QPixmap` needs the application to exist, so the icons are drawn here, not at import.
         self._icons = {status: draw_icon(status) for status in TrayStatus}
 
-        # `requests.Session` is not guaranteed thread-safe, so one worker thread makes every
-        # client call (poll and stop) run one at a time.
+        # The client's `requests.Session` is not guaranteed thread-safe, so one worker thread
+        # makes every client call (poll and stop) run one at a time.
         self._jobs: queue.Queue[Callable[[], None] | None] = queue.Queue()
         # A daemon thread cannot hold the process open while it waits on a hung server. Qt's
         # `QThreadPool` joins its threads on exit, which delayed quitting by 10 s.
@@ -175,9 +193,9 @@ class TrayController(QObject):
         self._poll_signals.started.emit()
         try:
             models = self._client.loaded_models()
-        # Catch everything, not only `OllamaUnavailable`. A failure that emits no signal leaves
-        # the controller's in-flight flag set, and every later poll is then skipped.
         except Exception as error:
+            # Catch everything, not only `OllamaUnavailable`. A failure that emits no signal
+            # leaves the controller's in-flight flag set, and every later poll is then skipped.
             self._poll_signals.failed.emit(str(error))
         else:
             self._poll_signals.succeeded.emit(models)
@@ -202,6 +220,7 @@ class TrayController(QObject):
                 # Catch everything, not only `OllamaUnavailable`, so one model's failure does
                 # not skip the models after it or end the worker thread.
                 except Exception as error:
+                    logger.warning("Could not stop %s: %s", shorten(name), shorten(str(error)))
                     failures.append(f"{name}: {error}")
         finally:
             # The names must always be released, or those models could never be stopped again.
@@ -210,15 +229,27 @@ class TrayController(QObject):
             self._stop_signals.finished.emit(names)
 
     def apply_result(self, result: list[LoadedModel] | OllamaUnavailable | None) -> None:
+        """Show a poll result. `None` means the first poll has not returned yet."""
         if result is None:
-            self._show_status(TrayStatus.UNREACHABLE)
+            self._show_status(TrayStatus.CHECKING)
             self._tray.setToolTip(tooltip_text(self._host, None))
             self._rebuild_menu_if_changed([])
             return
+        self._log_reachability_change(result)
         self._models = [] if isinstance(result, OllamaUnavailable) else result
         self._show_status(status_from_result(result))
         self._tray.setToolTip(tooltip_text(self._host, result))
         self._rebuild_menu_if_changed(self._models)
+
+    def _log_reachability_change(self, result: list[LoadedModel] | OllamaUnavailable) -> None:
+        unreachable = isinstance(result, OllamaUnavailable)
+        if unreachable == self._unreachable:
+            return
+        self._unreachable = unreachable
+        if isinstance(result, OllamaUnavailable):
+            logger.warning("Server %s is unreachable: %s", self._host, shorten(str(result)))
+        else:
+            logger.info("Server %s is reachable again", self._host)
 
     def _show_status(self, status: TrayStatus) -> None:
         if status == self._status:
@@ -290,7 +321,9 @@ class TrayController(QObject):
 
     @Slot(str)
     def _on_stop_failed(self, message: str) -> None:
-        self._tray.showMessage("Could not stop model", message, QSystemTrayIcon.MessageIcon.Warning)
+        self._tray.showMessage(
+            "Could not stop model", escape_lines(message), QSystemTrayIcon.MessageIcon.Warning
+        )
 
     @Slot(list)
     def _on_stop_finished(self, names: list[str]) -> None:
@@ -301,6 +334,13 @@ class TrayController(QObject):
             self._poll_again = True
         else:
             self.refresh()
+
+
+HOST_HELP = (
+    "server address as [http[s]://][host][:port][/path]. Defaults to OLLAMA_HOST, then "
+    "http://127.0.0.1:11434. A missing port means 11434 on every scheme."
+)
+INTERVAL_HELP = "seconds between status checks, a finite number above 0 (default: %(default)s)"
 
 
 def positive_seconds(raw: str) -> float:
@@ -318,16 +358,25 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         prog="ollama-tray", description="Show which models an Ollama server has loaded."
     )
-    parser.add_argument(
-        "--host", help="server address; defaults to OLLAMA_HOST, then 127.0.0.1:11434"
-    )
+    parser.add_argument("--host", help=HOST_HELP)
     parser.add_argument(
         "--interval",
         type=positive_seconds,
         default=DEFAULT_INTERVAL_SECONDS,
-        help="seconds between status checks (default: %(default)s)",
+        help=INTERVAL_HELP,
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="log at INFO level, which adds a line when the server recovers",
+    )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {version('ollama-tray')}")
     args = parser.parse_args()
+    logging.basicConfig(
+        stream=sys.stderr,
+        level=logging.INFO if args.verbose else logging.WARNING,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
     try:
         host = resolve_host(args.host)
     except ValueError as error:

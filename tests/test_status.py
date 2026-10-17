@@ -4,6 +4,8 @@ from ollama_tray.client import LoadedModel, OllamaUnavailable
 from ollama_tray.status import TrayStatus, status_from_result, tooltip_text
 
 HOST = "http://localhost:11434"
+RICH_TEXT_NAME = '<a href="x">click</a>'
+ESCAPED_RICH_TEXT_NAME = "&lt;a href=&quot;x&quot;&gt;click&lt;/a&gt;"
 
 
 def make_model(name: str, size_vram: int) -> LoadedModel:
@@ -41,6 +43,22 @@ def test_status_from_result(
             [make_model("llama3:8b", 4_700_000_000), make_model("qwen3:4b", 2_549_000_000)],
             "http://localhost:11434\nllama3:8b (4.7 GB VRAM)\nqwen3:4b (2.5 GB VRAM)",
         ),
+        (
+            [make_model(RICH_TEXT_NAME, 4_700_000_000)],
+            f"http://localhost:11434\n{ESCAPED_RICH_TEXT_NAME} (4.7 GB VRAM)",
+        ),
+        (
+            [make_model("m" * 10_000, 4_700_000_000)],
+            f"http://localhost:11434\n{'m' * 117}... (4.7 GB VRAM)",
+        ),
+        (
+            OllamaUnavailable(RICH_TEXT_NAME),
+            f"http://localhost:11434\nUnreachable: {ESCAPED_RICH_TEXT_NAME}",
+        ),
+        (
+            OllamaUnavailable("e" * 10_000),
+            f"http://localhost:11434\nUnreachable: {'e' * 117}...",
+        ),
     ],
     ids=[
         "first-poll-pending",
@@ -49,6 +67,10 @@ def test_status_from_result(
         "multi-line-reason",
         "nothing-loaded",
         "models-with-vram",
+        "rich-text-model-name",
+        "long-model-name",
+        "rich-text-reason",
+        "long-reason",
     ],
 )
 def test_tooltip_text(result: list[LoadedModel] | OllamaUnavailable | None, expected: str) -> None:
