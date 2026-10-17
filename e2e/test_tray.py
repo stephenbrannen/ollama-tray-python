@@ -6,6 +6,9 @@ Run it with `e2e/run.sh`. The default `uv run pytest` does not collect this dire
 import subprocess
 
 from driver import Ollama, ToolTip, Tray, kill_proxy, wait_until
+from pytest import mark
+
+from conftest import PROXY_URL
 
 GREY = "#8b949e"
 GREEN = "#2ea043"
@@ -51,3 +54,15 @@ def test_tray_follows_a_real_server(
     kill_proxy(proxy)
     wait_until(tray.tooltip, lambda tip: "Unreachable" in tip.title, "unreachable", UPDATE_SECONDS)
     assert tray.icon_color() == RED
+
+
+# Ollama answers 404 for this path, so the tray shows the server as unreachable with the path
+# in the first line.
+@mark.parametrize("host_path", ["/a&b<c"])
+def test_tooltip_shows_special_characters_as_typed(tray: Tray, host_path: str) -> None:
+    """Qt sends the tooltip as plain text, so an HTML-escaped `&amp;` would appear literally."""
+    tooltip = wait_until(
+        tray.tooltip, lambda tip: "Unreachable" in tip.title, "unreachable", UPDATE_SECONDS
+    )
+
+    assert tooltip.title.splitlines()[0] == f"{PROXY_URL}{host_path}"

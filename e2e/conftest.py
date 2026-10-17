@@ -95,15 +95,32 @@ def proxy(ollama_url: str) -> Iterator[subprocess.Popen[bytes]]:
 
 
 @fixture
+def host_path() -> str:
+    """The path appended to the proxy address. A test overrides it with `mark.parametrize`."""
+    return ""
+
+
+@fixture
 def tray(
-    watcher: None, proxy: subprocess.Popen[bytes], bus: DBusConnection, ollama: Ollama
+    watcher: None,
+    proxy: subprocess.Popen[bytes],
+    bus: DBusConnection,
+    ollama: Ollama,
+    host_path: str,
 ) -> Iterator[Tray]:
     """Start the app and return its registered item.
 
     It requests `ollama` only so the model is pulled and unloaded before the app's first poll.
     """
     environment = {**os.environ, "QT_QPA_PLATFORM": "xcb"}
-    command = [APP, "--host", PROXY_URL, "--interval", APP_INTERVAL_SECONDS, "--verbose"]
+    command = [
+        APP,
+        "--host",
+        f"{PROXY_URL}{host_path}",
+        "--interval",
+        APP_INTERVAL_SECONDS,
+        "--verbose",
+    ]
     process = subprocess.Popen(command, env=environment)
     try:
         items = wait_until(
