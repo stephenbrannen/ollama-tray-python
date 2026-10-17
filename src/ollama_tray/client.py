@@ -92,7 +92,7 @@ class OllamaClient:
             "POST",
             "/api/generate",
             UNLOAD_TIMEOUT_SECONDS,
-            json={"model": name, "keep_alive": 0},
+            payload={"model": name, "keep_alive": 0},
         )
 
     def _request(
@@ -100,13 +100,14 @@ class OllamaClient:
         method: str,
         path: str,
         timeout_seconds: float,
-        json: dict[str, str | int] | None = None,
+        payload: dict[str, str | int] | None = None,
     ) -> bytes:
         """Return the response body, or raise `OllamaUnavailable`.
 
         The `requests` timeout limits each socket wait, not the whole request, so a server
-        that sends one byte at a time could hold the call open forever. The body is read in
-        chunks against a deadline for the whole request, and capped in size.
+        that sends one byte at a time could hold the call open forever. Once the headers
+        arrive, the body is read in chunks against a deadline and capped in size. The deadline
+        is checked between chunks, so a stalled read can overrun it by one socket timeout.
         """
         deadline = time.monotonic() + timeout_seconds
         try:
@@ -114,7 +115,7 @@ class OllamaClient:
             with self._session.request(
                 method,
                 f"{self._base_url}{path}",
-                json=json,
+                json=payload,
                 timeout=timeout_seconds,
                 allow_redirects=False,
                 stream=True,
