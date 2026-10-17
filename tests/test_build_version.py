@@ -1,7 +1,7 @@
 from importlib.metadata import version
 from pathlib import Path
 
-from pytest import MonkeyPatch, fixture
+from pytest import MonkeyPatch, fixture, mark
 
 from ollama_tray import build_version as build_version_module
 from ollama_tray.build_version import STAMP_FILE, build_version
@@ -15,7 +15,8 @@ def package_dir(monkeypatch: MonkeyPatch, tmp_path: Path) -> Path:
     return tmp_path
 
 
-def test_build_version_reports_the_package_version_without_a_stamp(package_dir: Path) -> None:
+@mark.usefixtures("package_dir")
+def test_build_version_reports_the_package_version_without_a_stamp() -> None:
     assert build_version() == version("ollama-tray")
 
 

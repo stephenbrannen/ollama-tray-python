@@ -799,12 +799,10 @@ def restore_signal_handlers() -> Iterator[None]:
 
 
 @mark.parametrize("signal_number", [signal.SIGINT, signal.SIGTERM], ids=["sigint", "sigterm"])
+@mark.usefixtures("restore_signal_handlers")
 @patch.object(QApplication, "quit")
 def test_quit_on_signals_quits_the_app_and_wakes_the_event_loop(
-    quit_app: MagicMock,
-    qapp: QApplication,
-    restore_signal_handlers: None,
-    signal_number: signal.Signals,
+    quit_app: MagicMock, qapp: QApplication, signal_number: signal.Signals
 ) -> None:
     timers_before = len(qapp.findChildren(QTimer))
 
