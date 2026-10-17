@@ -115,6 +115,7 @@ source = { editable = "." }
 dependencies = [
     { name = "pyside6-essentials" },
     { name = "requests" },
+    { name = "urllib3" },
 ]
 
 [package.dev-dependencies]
@@ -129,7 +130,8 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "pyside6-essentials", specifier = ">=6.11.1,<7" },
-    { name = "requests", specifier = ">=2.34.2,<3" },
+    { name = "requests", specifier = ">=2.31,<3" },
+    { name = "urllib3", specifier = ">=2.2,<3" },
 ]
 
 [package.metadata.requires-dev]
