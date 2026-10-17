@@ -23,6 +23,7 @@ from ollama_tray.client import (
 from ollama_tray.status import (
     TrayStatus,
     escape_lines,
+    menu_label_text,
     shorten,
     status_from_result,
     tooltip_text,
@@ -71,7 +72,7 @@ def populate_menu(
 ) -> None:
     menu.clear()
     for model in models:
-        stop_action = menu.addAction(f"Stop {model.name}")
+        stop_action = menu.addAction(f"Stop {menu_label_text(model.name)}")
         # `name=model.name` binds this model now. A plain closure would read the loop variable
         # later and stop the last model every time. `_checked` takes the bool that Qt sends.
         stop_action.triggered.connect(lambda _checked=False, name=model.name: on_stop(name))

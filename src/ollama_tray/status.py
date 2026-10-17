@@ -42,6 +42,15 @@ def escape_line(text: str) -> str:
     return escape(shorten(text))
 
 
+def menu_label_text(text: str) -> str:
+    """Make server-supplied text safe as a menu item label, capped in length.
+
+    Qt reads a single `&` in an action's text as a shortcut marker and hides it. Menu text is
+    not rich text, so only `&` needs doubling, and the cap comes first so it cannot split a pair.
+    """
+    return shorten(text).replace("&", "&&")
+
+
 def escape_lines(text: str) -> str:
     return "\n".join(escape_line(line) for line in text.splitlines())
 

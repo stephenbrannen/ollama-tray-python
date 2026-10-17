@@ -58,8 +58,10 @@ def labels(menu: QMenu) -> list[str]:
             ["llama3:8b", "qwen3:4b"],
             ["Stop llama3:8b", "Stop qwen3:4b", "Stop all", "Refresh now", "Quit"],
         ),
+        (["q&a"], ["Stop q&&a", "Refresh now", "Quit"]),
+        (["m" * 300], [f"Stop {'m' * 117}...", "Refresh now", "Quit"]),
     ],
-    ids=["none-loaded", "one-loaded", "two-loaded"],
+    ids=["none-loaded", "one-loaded", "two-loaded", "ampersand-doubled", "long-name-capped"],
 )
 def test_populate_menu_lists_stop_actions(
     qapp: QApplication, names: list[str], expected: list[str]
@@ -76,7 +78,7 @@ def test_populate_menu_actions_call_their_callbacks(qapp: QApplication) -> None:
     menu = QMenu()
     populate_menu(
         menu,
-        [make_model("llama3:8b"), make_model("qwen3:4b")],
+        [make_model("llama3:8b"), make_model("q&a")],
         on_stop,
         on_stop_all,
         on_refresh,
@@ -87,7 +89,7 @@ def test_populate_menu_actions_call_their_callbacks(qapp: QApplication) -> None:
         action.trigger()
 
     on_stop.assert_any_call("llama3:8b")
-    on_stop.assert_any_call("qwen3:4b")
+    on_stop.assert_any_call("q&a")
     on_stop_all.assert_called_once_with()
     on_refresh.assert_called_once_with()
     on_quit.assert_called_once_with()
