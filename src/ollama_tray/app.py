@@ -70,7 +70,9 @@ class _Task(QRunnable):
     def run(self) -> None:
         try:
             result = self._call()
-        except OllamaUnavailable as error:
+        # Catch everything, not only `OllamaUnavailable`. A failure that emits no signal leaves
+        # the controller's in-flight flag set, and every later poll is then skipped.
+        except Exception as error:
             self._signals.failed.emit(str(error))
         else:
             self._signals.succeeded.emit(result)
@@ -198,7 +200,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         prog="ollama-tray", description="Show which models an Ollama server has loaded."
     )
-    parser.add_argument("--host", help="server address; defaults to OLLAMA_HOST, then localhost")
+    parser.add_argument(
+        "--host", help="server address; defaults to OLLAMA_HOST, then 127.0.0.1:11434"
+    )
     parser.add_argument(
         "--interval",
         type=positive_seconds,

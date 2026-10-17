@@ -147,6 +147,19 @@ def test_refresh_applies_worker_result_on_gui_thread(
     assert labels(controller._menu) == ["Stop llama3:8b", "Refresh now", "Quit"]
 
 
+@patch.object(OllamaClient, "loaded_models", side_effect=[RuntimeError("bug"), []])
+def test_poll_recovers_after_unexpected_error(loaded_models: MagicMock, qapp: QApplication) -> None:
+    host = "http://ollama.test:11434"
+    controller = TrayController(OllamaClient(host), host, 5)
+
+    controller.refresh()
+    assert wait_for(lambda: controller._tray.toolTip().endswith("Unreachable"), 2000)
+    controller.refresh()
+
+    assert wait_for(lambda: controller._tray.toolTip().endswith("No model loaded"), 2000)
+    assert loaded_models.call_count == 2
+
+
 def test_stop_failure_is_reported_and_status_refreshed(
     qapp: QApplication, responses: RequestsMock
 ) -> None:
