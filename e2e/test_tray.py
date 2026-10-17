@@ -24,7 +24,7 @@ UNLOAD_SECONDS = 0.5
 def test_tray_follows_a_real_server(
     tray: Tray, ollama: Ollama, model: str, proxy: subprocess.Popen[bytes]
 ) -> None:
-    """Walk one session: idle, load, keep loaded, Stop, then the server goes away.
+    """Walk one session: idle, load, Keep loaded, Stop, then the server goes away.
 
     The steps share one app and one server, and each step starts from the state the previous
     one left, so they are one test.
@@ -43,7 +43,10 @@ def test_tray_follows_a_real_server(
     )
     assert tray.icon_color() == GREEN
 
-    ollama.load(model, keep_alive=-1)
+    items = wait_until(
+        tray.menu_items, lambda labels: model in labels, "a Keep loaded entry", UPDATE_SECONDS
+    )
+    tray.click(items[model])
     tooltip = wait_until(
         tray.tooltip,
         lambda tip: "kept loaded" in tip.title,
@@ -53,7 +56,12 @@ def test_tray_follows_a_real_server(
     assert tooltip.title.splitlines()[1].endswith(", kept loaded)")
 
     items = wait_until(
-        tray.menu_items, lambda labels: f"Stop {model}" in labels, "a Stop item", UPDATE_SECONDS
+        tray.menu_items,
+        lambda labels: (
+            f"Stop {model}" in labels and model not in labels and "Keep loaded" not in labels
+        ),
+        "the Keep loaded entry to disappear",
+        UPDATE_SECONDS,
     )
     tray.click(items[f"Stop {model}"])
     wait_until(ollama.loaded_names, lambda names: names == [], "Ollama to unload", UNLOAD_SECONDS)

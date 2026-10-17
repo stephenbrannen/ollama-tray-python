@@ -128,6 +128,16 @@ class OllamaClient:
             payload={"model": name, "keep_alive": 0},
         )
 
+    def keep_loaded(self, name: str) -> None:
+        # A keep-alive of -1 tells Ollama to never unload this model, without changing the
+        # server's own keep-alive setting. The call returns once the model is loaded.
+        self._request(
+            "POST",
+            "/api/generate",
+            UNLOAD_TIMEOUT_SECONDS,
+            payload={"model": name, "keep_alive": -1},
+        )
+
     def _request(
         self,
         method: str,

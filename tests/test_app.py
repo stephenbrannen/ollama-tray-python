@@ -2,12 +2,13 @@ import logging
 import sys
 import time
 from collections.abc import Callable, Iterator
+from datetime import UTC, datetime
 from importlib.metadata import version
 from threading import Event
 from typing import NamedTuple
 from unittest.mock import MagicMock, call, patch
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 from pytest import CaptureFixture, LogCaptureFixture, MonkeyPatch, fixture, mark, raises
@@ -20,6 +21,7 @@ from tests.fixtures import HOST, make_model
 
 GREY = "#8b949e"
 RED = "#da3633"
+KEPT_FOREVER = datetime(2319, 1, 1, tzinfo=UTC)
 RICH_TEXT_NAME = '<a href="x">click</a>'
 WAIT_MILLISECONDS = 2000
 
@@ -45,6 +47,15 @@ def wait_for(condition: Callable[[], bool]) -> bool:
 
 def labels(menu: QMenu) -> list[str]:
     return [action.text() for action in menu.actions() if not action.isSeparator()]
+
+
+def keep_labels(menu: QMenu) -> list[str]:
+    """Return the Keep loaded submenu's labels, or `[]` when the menu has none."""
+    for action in menu.actions():
+        submenu = action.menu()
+        if action.text() == "Keep loaded" and isinstance(submenu, QMenu):
+            return labels(submenu)
+    return []
 
 
 class Built(NamedTuple):
@@ -73,36 +84,84 @@ def make_controller(qapp: QApplication) -> Iterator[MakeController]:
 
 
 @mark.parametrize(
-    ("names", "expected"),
+    ("names", "keepable", "expected", "expected_keep"),
     [
-        ([], ["Refresh now", "Quit"]),
-        (["llama3:8b"], ["Stop llama3:8b", "Refresh now", "Quit"]),
+        ([], [], ["Refresh now", "Quit"], []),
+        (["llama3:8b"], [], ["Stop llama3:8b", "Refresh now", "Quit"], []),
+        (
+            ["llama3:8b"],
+            ["llama3:8b"],
+            ["Stop llama3:8b", "Keep loaded", "Refresh now", "Quit"],
+            ["llama3:8b"],
+        ),
         (
             ["llama3:8b", "qwen3:4b"],
-            ["Stop llama3:8b", "Stop qwen3:4b", "Stop all", "Refresh now", "Quit"],
+            ["qwen3:4b"],
+            ["Stop llama3:8b", "Stop qwen3:4b", "Stop all", "Keep loaded", "Refresh now", "Quit"],
+            ["qwen3:4b"],
         ),
-        (["q&a"], ["Stop q&&a", "Refresh now", "Quit"]),
-        (["m" * 300], [f"Stop {'m' * 117}...", "Refresh now", "Quit"]),
+        (
+            ["q&a"],
+            ["q&a"],
+            ["Stop q&&a", "Keep loaded", "Refresh now", "Quit"],
+            ["q&&a"],
+        ),
+        (
+            ["m" * 300],
+            ["m" * 300],
+            [f"Stop {'m' * 117}...", "Keep loaded", "Refresh now", "Quit"],
+            [f"{'m' * 117}..."],
+        ),
     ],
-    ids=["none-loaded", "one-loaded", "two-loaded", "ampersand-doubled", "long-name-capped"],
+    ids=[
+        "none-loaded",
+        "all-kept-loaded",
+        "one-keepable",
+        "one-of-two-keepable",
+        "ampersand-doubled",
+        "long-name-capped",
+    ],
 )
-def test_populate_menu_lists_stop_actions(
-    qapp: QApplication, names: list[str], expected: list[str]
+def test_populate_menu_lists_stop_actions_and_keep_loaded_submenu(
+    qapp: QApplication,
+    names: list[str],
+    keepable: list[str],
+    expected: list[str],
+    expected_keep: list[str],
 ) -> None:
     menu = QMenu()
 
-    populate_menu(menu, [make_model(name) for name in names], print, print, print, print)
+    populate_menu(
+        menu, [make_model(name) for name in names], keepable, print, print, print, print, print
+    )
 
     assert labels(menu) == expected
+    assert keep_labels(menu) == expected_keep
+
+
+def test_populate_menu_rebuild_replaces_the_keep_loaded_submenu(qapp: QApplication) -> None:
+    menu = QMenu()
+    models = [make_model("a")]
+    populate_menu(menu, models, ["a"], print, print, print, print, print)
+
+    populate_menu(menu, models, ["a"], print, print, print, print, print)
+
+    def direct_menus() -> int:
+        return len(menu.findChildren(QMenu, options=Qt.FindChildOption.FindDirectChildrenOnly))
+
+    assert wait_for(lambda: direct_menus() == 1)
+    assert keep_labels(menu) == ["a"]
 
 
 def test_populate_menu_actions_call_their_callbacks(qapp: QApplication) -> None:
-    on_stop, on_stop_all, on_refresh, on_quit = MagicMock(), MagicMock(), MagicMock(), MagicMock()
+    on_stop, on_keep_loaded, on_stop_all, on_refresh, on_quit = (MagicMock() for _ in range(5))
     menu = QMenu()
     populate_menu(
         menu,
         [make_model("llama3:8b"), make_model("q&a")],
+        ["q&a"],
         on_stop,
+        on_keep_loaded,
         on_stop_all,
         on_refresh,
         on_quit,
@@ -110,7 +169,10 @@ def test_populate_menu_actions_call_their_callbacks(qapp: QApplication) -> None:
 
     for action in menu.actions():
         action.trigger()
+    (keep_menu,) = [m for a in menu.actions() if isinstance(m := a.menu(), QMenu)]
+    keep_menu.actions()[0].trigger()
 
+    on_keep_loaded.assert_called_once_with("q&a")
     on_stop.assert_any_call("llama3:8b")
     on_stop.assert_any_call("q&a")
     on_stop_all.assert_called_once_with()
@@ -127,7 +189,7 @@ def test_apply_result_updates_tooltip_and_menu(make_controller: MakeController) 
     controller.apply_result([make_model("llama3:8b")])
 
     assert tray.toolTip() == f"{HOST}\nllama3:8b (4.7 GB VRAM)"
-    assert labels(menu) == ["Stop llama3:8b", "Refresh now", "Quit"]
+    assert labels(menu) == ["Stop llama3:8b", "Keep loaded", "Refresh now", "Quit"]
 
     controller.apply_result(OllamaUnavailable("down"))
 
@@ -176,7 +238,7 @@ def test_refresh_applies_worker_result_on_gui_thread(
 
     assert wait_for(lambda: tray.toolTip() == expected)
     assert len(responses.calls) == 1
-    assert labels(menu) == ["Stop llama3:8b", "Refresh now", "Quit"]
+    assert labels(menu) == ["Stop llama3:8b", "Keep loaded", "Refresh now", "Quit"]
 
 
 @patch.object(OllamaClient, "loaded_models", side_effect=[RuntimeError("bug"), []])
@@ -300,6 +362,10 @@ class StubClient(OllamaClient):
         self.block_polls = False
         self.block_unloads = False
         self.unload_error: Exception | None = None
+        self.keep_error: Exception | None = None
+        self.block_keeps = False
+        self.keep_started = Event()
+        self.kept: list[str] = []
         self.unload_started = Event()
         self.polls = 0
         self.unloaded: list[str] = []
@@ -318,6 +384,14 @@ class StubClient(OllamaClient):
         if self.block_unloads:
             self.gate.wait()
         self.unloaded.append(name)
+
+    def keep_loaded(self, name: str) -> None:
+        self.keep_started.set()
+        if self.keep_error:
+            raise self.keep_error
+        if self.block_keeps:
+            self.gate.wait()
+        self.kept.append(name)
 
 
 class Harness(NamedTuple):
@@ -502,7 +576,9 @@ def test_menu_is_not_rebuilt_while_open_and_catches_up_when_it_closes(harness: H
 
     assert labels(menu) == ["Refresh now", "Quit"]
     menu.aboutToHide.emit()
-    assert wait_for(lambda: labels(menu) == ["Stop llama3:8b", "Refresh now", "Quit"])
+    assert wait_for(
+        lambda: labels(menu) == ["Stop llama3:8b", "Keep loaded", "Refresh now", "Quit"]
+    )
 
 
 @patch.object(QSystemTrayIcon, "showMessage")
@@ -519,6 +595,79 @@ def test_stop_failure_message_is_escaped_and_capped(
     assert message.startswith("a: &lt;a href=&quot;x&quot;&gt;click&lt;/a&gt;xxx")
     assert message.endswith("xxx...")
     assert "<" not in message
+
+
+def test_keep_loaded_runs_on_the_worker_and_is_followed_by_a_poll(harness: Harness) -> None:
+    controller, client, _tray, _menu = harness
+
+    controller.keep_loaded("a")
+
+    assert wait_for(lambda: client.kept == ["a"])
+    assert wait_for(lambda: client.polls >= 1)
+
+
+def test_duplicate_keep_loaded_is_ignored_while_in_flight(harness: Harness) -> None:
+    controller, client, _tray, _menu = harness
+    client.block_keeps = True
+
+    controller.keep_loaded("a")
+    controller.keep_loaded("a")
+    controller.keep_loaded("b")
+    client.gate.set()
+
+    assert wait_for(lambda: client.kept == ["a", "b"])
+    assert wait_for(lambda: client.polls >= 1)
+    controller.keep_loaded("a")
+    assert wait_for(lambda: client.kept == ["a", "b", "a"])
+
+
+@patch.object(QSystemTrayIcon, "showMessage")
+def test_keep_loaded_failure_is_reported_escaped_and_logged(
+    show_message: MagicMock, harness: Harness, caplog: LogCaptureFixture
+) -> None:
+    controller, client, tray, _menu = harness
+    client.keep_error = RuntimeError(f"{RICH_TEXT_NAME}{'x' * 10_000}")
+
+    controller.keep_loaded("a")
+
+    assert wait_for(lambda: show_message.called)
+    title, message = show_message.call_args.args[:2]
+    assert title == "Could not keep model loaded"
+    assert message.startswith("a: &lt;a href=&quot;x&quot;&gt;click&lt;/a&gt;xxx")
+    assert "<" not in message
+    assert wait_for(lambda: tray.toolTip().endswith("No model loaded"))
+    assert caplog.records[0].getMessage().startswith("Could not keep a loaded: <a href")
+    controller.keep_loaded("a")
+    assert wait_for(lambda: show_message.call_count == 2)
+
+
+def test_shutdown_refuses_keep_loaded_and_drops_a_queued_one(harness: Harness) -> None:
+    controller, client, _tray, _menu = harness
+    client.block_unloads = True
+    controller.stop_models(["a"])
+    assert client.unload_started.wait(2)
+    controller.keep_loaded("b")
+
+    controller.shutdown()
+    controller.keep_loaded("c")
+    client.gate.set()
+    controller.worker_thread.join(2)
+
+    assert client.kept == []
+
+
+def test_keep_loaded_entry_disappears_once_the_model_is_kept(harness: Harness) -> None:
+    controller, _client, _tray, menu = harness
+    controller.apply_result([make_model("a"), make_model("b")])
+    assert keep_labels(menu) == ["a", "b"]
+
+    controller.apply_result([make_model("a", expires_at=KEPT_FOREVER), make_model("b")])
+
+    assert keep_labels(menu) == ["b"]
+    controller.apply_result(
+        [make_model("a", expires_at=KEPT_FOREVER), make_model("b", expires_at=KEPT_FOREVER)]
+    )
+    assert labels(menu) == ["Stop a", "Stop b", "Stop all", "Refresh now", "Quit"]
 
 
 def test_reachability_changes_are_logged_once(harness: Harness, caplog: LogCaptureFixture) -> None:
