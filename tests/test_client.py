@@ -1,5 +1,7 @@
+import time
 from collections.abc import Iterator
-from datetime import UTC, datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from threading import Event, Thread
 
 from pytest import MonkeyPatch, fixture, mark, param, raises
 from requests import ConnectionError as RequestsConnectionError
@@ -9,6 +11,67 @@ from responses import RequestsMock, matchers
 from ollama_tray.client import LoadedModel, OllamaClient, OllamaUnavailable, resolve_host
 
 BASE_URL = "http://ollama.test:11434"
+OVERSIZE_TOTAL_BYTES = 64 * 1024 * 1024
+
+
+class LoopbackServer(ThreadingHTTPServer):
+    """A real HTTP server for the behaviors `responses` cannot fake: slow and endless bodies."""
+
+    def __init__(self) -> None:
+        super().__init__(("127.0.0.1", 0), _Handler)
+        self.mode = "trickle"
+        self.paths: list[str] = []
+        self.bytes_sent = 0
+        self.stopped = Event()
+
+    @property
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self.server_port}"
+
+
+class _Handler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        server = self.server
+        assert isinstance(server, LoopbackServer)
+        server.paths.append(self.path)
+        if server.mode == "redirect":
+            self.send_response(302)
+            self.send_header("Location", "/elsewhere")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.end_headers()
+        try:
+            if server.mode == "trickle":
+                # Bounded so a client without a deadline fails the test instead of hanging it.
+                for _ in range(60):
+                    self.wfile.write(b" ")
+                    self.wfile.flush()
+                    if server.stopped.wait(0.05):
+                        return
+            else:
+                chunk = b" " * 65536
+                while server.bytes_sent < OVERSIZE_TOTAL_BYTES:
+                    self.wfile.write(chunk)
+                    server.bytes_sent += len(chunk)
+        except OSError:
+            return
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
+@fixture
+def loopback() -> Iterator[LoopbackServer]:
+    server = LoopbackServer()
+    thread = Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
+    thread.start()
+    yield server
+    server.stopped.set()
+    server.shutdown()
+    server.server_close()
+    thread.join()
 
 
 @fixture
@@ -30,6 +93,7 @@ def client() -> OllamaClient:
         param(None, "gpu-box", "http://gpu-box:11434", id="env-bare-host"),
         param(None, "gpu-box:8080", "http://gpu-box:8080", id="env-host-and-port"),
         param(None, "https://gpu-box", "https://gpu-box:11434", id="env-scheme-only"),
+        param(None, "HTTPS://Gpu-Box", "https://gpu-box:11434", id="uppercase-scheme"),
         param(None, "https://gpu-box:8443", "https://gpu-box:8443", id="env-scheme-and-port"),
         param(None, "http://gpu-box:8080/", "http://gpu-box:8080", id="trailing-slash"),
         param(None, "0.0.0.0", "http://0.0.0.0:11434", id="wildcard-address"),
@@ -59,9 +123,19 @@ def test_resolve_host(
 
 @mark.parametrize(
     "host",
-    [param("box:abc", id="non-numeric-port"), param("box:70000", id="out-of-range-port")],
+    [
+        param("box:abc", id="non-numeric-port"),
+        param("box:70000", id="out-of-range-port"),
+        param("box:0", id="port-zero"),
+        param("ftp://box", id="ftp-scheme"),
+        param("FILE:///etc/passwd", id="file-scheme-uppercase"),
+        param("user@box", id="userinfo-user"),
+        param("http://user:secret@box:8080", id="userinfo-user-and-password"),
+        param("box?x=1", id="query"),
+        param("box#frag", id="fragment"),
+    ],
 )
-def test_resolve_host_rejects_invalid_port(host: str) -> None:
+def test_resolve_host_rejects_invalid_address(host: str) -> None:
     with raises(ValueError):
         resolve_host(host)
 
@@ -71,39 +145,20 @@ def test_resolve_host_rejects_invalid_port(host: str) -> None:
     [
         ({"models": []}, []),
         (
-            {
-                "models": [
-                    {
-                        "name": "llama3:8b",
-                        "size_vram": 5137025024,
-                        "expires_at": "2026-10-16T12:30:00Z",
-                    }
-                ]
-            },
-            [LoadedModel("llama3:8b", 5137025024, datetime(2026, 10, 16, 12, 30, tzinfo=UTC))],
+            {"models": [{"name": "llama3:8b", "size_vram": 5137025024}]},
+            [LoadedModel("llama3:8b", 5137025024)],
         ),
         (
             {
                 "models": [
-                    {
-                        "name": "llama3:8b",
-                        "size_vram": 5137025024,
-                        "expires_at": "2026-10-16T05:30:00.837530123-07:00",
-                    },
-                    {"name": "qwen3:4b", "size_vram": 0, "expires_at": "2026-10-16T12:35:00Z"},
+                    {"name": "llama3:8b", "size_vram": 1, "expires_at": "2026-10-16T12:30:00Z"},
+                    {"name": "qwen3:4b", "size_vram": 0, "expires_at": "not a date"},
                 ]
             },
-            [
-                LoadedModel(
-                    "llama3:8b",
-                    5137025024,
-                    datetime(2026, 10, 16, 5, 30, 0, 837530, tzinfo=timezone(timedelta(hours=-7))),
-                ),
-                LoadedModel("qwen3:4b", 0, datetime(2026, 10, 16, 12, 35, tzinfo=UTC)),
-            ],
+            [LoadedModel("llama3:8b", 1), LoadedModel("qwen3:4b", 0)],
         ),
     ],
-    ids=["none", "one", "two-with-offset-and-nanoseconds"],
+    ids=["none", "one", "two-ignoring-expires-at"],
 )
 def test_loaded_models_parses_api_ps(
     client: OllamaClient,
@@ -151,11 +206,16 @@ def test_loaded_models_raises_unavailable_on_unexpected_payload(
         client.loaded_models()
 
 
-def test_unload_posts_keep_alive_zero(client: OllamaClient, responses: RequestsMock) -> None:
+def test_unload_posts_keep_alive_zero_with_its_own_timeout(
+    client: OllamaClient, responses: RequestsMock
+) -> None:
     responses.post(
         f"{BASE_URL}/api/generate",
         json={"done": True},
-        match=[matchers.json_params_matcher({"model": "llama3:8b", "keep_alive": 0})],
+        match=[
+            matchers.json_params_matcher({"model": "llama3:8b", "keep_alive": 0}),
+            matchers.request_kwargs_matcher({"timeout": 10}),
+        ],
     )
 
     client.unload("llama3:8b")
@@ -170,3 +230,36 @@ def test_unload_raises_unavailable_on_server_error(
 
     with raises(OllamaUnavailable):
         client.unload("llama3:8b")
+
+
+def test_loaded_models_fails_within_deadline_on_trickling_server(
+    monkeypatch: MonkeyPatch, loopback: LoopbackServer
+) -> None:
+    monkeypatch.setattr("ollama_tray.client.STATUS_TIMEOUT_SECONDS", 0.5)
+    loopback.mode = "trickle"
+    started = time.monotonic()
+
+    with raises(OllamaUnavailable, match="took too long"):
+        OllamaClient(loopback.url).loaded_models()
+
+    assert time.monotonic() - started < 1.5
+
+
+def test_loaded_models_fails_on_oversized_body_without_reading_it_all(
+    loopback: LoopbackServer,
+) -> None:
+    loopback.mode = "oversize"
+
+    with raises(OllamaUnavailable, match="too large"):
+        OllamaClient(loopback.url).loaded_models()
+
+    assert loopback.bytes_sent < OVERSIZE_TOTAL_BYTES
+
+
+def test_loaded_models_does_not_follow_redirects(loopback: LoopbackServer) -> None:
+    loopback.mode = "redirect"
+
+    with raises(OllamaUnavailable, match="redirect"):
+        OllamaClient(loopback.url).loaded_models()
+
+    assert loopback.paths == ["/api/ps"]

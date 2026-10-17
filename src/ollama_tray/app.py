@@ -1,6 +1,7 @@
 """System tray icon that shows which models an Ollama server has loaded."""
 
 import argparse
+import math
 import sys
 from collections.abc import Callable
 
@@ -191,8 +192,9 @@ def positive_seconds(raw: str) -> float:
         seconds = float(raw)
     except ValueError:
         raise argparse.ArgumentTypeError(f"not a number: {raw!r}") from None
-    if seconds <= 0:
-        raise argparse.ArgumentTypeError("must be greater than 0")
+    # `nan` and `inf` pass a plain `<= 0` check, and `QTimer` cannot take either.
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise argparse.ArgumentTypeError("must be a finite number greater than 0")
     return seconds
 
 

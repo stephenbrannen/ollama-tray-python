@@ -1,5 +1,4 @@
 from collections.abc import Callable, Iterator
-from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 from PySide6.QtTest import QTest
@@ -13,9 +12,7 @@ from ollama_tray.status import TrayStatus
 
 
 def make_model(name: str) -> LoadedModel:
-    return LoadedModel(
-        name=name, size_vram=4_700_000_000, expires_at=datetime(2026, 1, 1, tzinfo=UTC)
-    )
+    return LoadedModel(name=name, size_vram=4_700_000_000)
 
 
 @fixture(scope="module")
@@ -177,8 +174,24 @@ def test_stop_failure_is_reported_and_status_refreshed(
 
 @mark.parametrize(
     "argv",
-    [["--host", "gpu-box:notaport"], ["--interval", "0"], ["--interval", "soon"]],
-    ids=["non-numeric-port", "zero-interval", "non-numeric-interval"],
+    [
+        ["--host", "gpu-box:notaport"],
+        ["--host", "ftp://gpu-box"],
+        ["--interval", "0"],
+        ["--interval", "-1"],
+        ["--interval", "soon"],
+        ["--interval", "nan"],
+        ["--interval", "inf"],
+    ],
+    ids=[
+        "non-numeric-port",
+        "ftp-scheme",
+        "zero-interval",
+        "negative-interval",
+        "non-numeric-interval",
+        "nan-interval",
+        "infinite-interval",
+    ],
 )
 def test_main_reports_bad_arguments_as_cli_error(
     monkeypatch: MonkeyPatch, capsys: CaptureFixture[str], argv: list[str]
