@@ -36,6 +36,11 @@
               requests
             ];
 
+            # nixpkgs ships one combined `pyside6` package and no `pyside6-essentials`, so the
+            # runtime dependency check can never find the name pyproject.toml asks for. The
+            # `pyside6` dependency above still provides QtCore, QtGui and QtWidgets.
+            pythonRemoveDeps = [ "pyside6-essentials" ];
+
             nativeCheckInputs = [ pythonPackages.pytestCheckHook ];
             pythonImportsCheck = [ "ollama_tray" ];
             # Qt needs a platform plugin to import QtWidgets, and the build sandbox has no display.
