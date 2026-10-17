@@ -31,19 +31,19 @@
           pkgs = nixpkgs.legacyPackages.${system};
           pyproject = fromTOML (builtins.readFile ./pyproject.toml);
           pythonPackages = pkgs.${pythonAttr + "Packages"};
-          # nixpkgs' pyside6 binds every Qt module, which makes the closure about 2.2 GiB
-          # (QtWebEngine alone is 469 MiB). The app imports only QtCore, QtGui and QtWidgets,
-          # and the tests add QtTest, so this build binds those four and links only qtbase.
-          # The override reads the internals of nixpkgs' pyside6 expression: the first four
-          # buildInputs are its required inputs, and `MODULES` is pyside6's own CMake option.
-          # Check both after a nixpkgs update that changes pyside6.
+          # nixpkgs' pyside6 binds every Qt module, which makes the closure about 2.2 GiB.
+          # QtWebEngine alone is 469 MiB. The app uses only QtCore, QtGui and QtWidgets, and
+          # the tests add QtTest. So this build binds those four and links only qtbase.
           pyside6Trimmed = pythonPackages.pyside6.overrideAttrs (old: {
+            # These are the required inputs of nixpkgs' pyside6 expression. If a nixpkgs
+            # update changes that list, copy the new required inputs here.
             buildInputs = [
               pkgs.qt6.qtbase
               pythonPackages.ninja
               pythonPackages.packaging
               pythonPackages.setuptools
             ];
+            # `MODULES` is a CMake option of the pyside6 source, not of nixpkgs.
             cmakeFlags = old.cmakeFlags ++ [ "-DMODULES=Core;Gui;Widgets;Test" ];
             # The generated bindings are large C++ files. With 18 parallel compile jobs, the
             # build ran out of memory in 8 GiB. Four jobs fit there and match a GitHub runner.
