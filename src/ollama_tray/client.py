@@ -4,7 +4,8 @@ import json
 import os
 import time
 from dataclasses import dataclass
-from typing import TypedDict
+from datetime import UTC, datetime
+from typing import NotRequired, TypedDict
 from urllib.parse import urlsplit
 
 import requests
@@ -29,15 +30,35 @@ class OllamaUnavailable(Exception):
 class LoadedModel:
     name: str
     size_vram: int
+    # When the server unloads the model on its own. `None` means unknown.
+    expires_at: datetime | None = None
 
 
 class _RunningModel(TypedDict):
     name: str
     size_vram: int
+    expires_at: NotRequired[str | None]
 
 
 class _PsPayload(TypedDict):
     models: list[_RunningModel]
+
+
+def parse_expiry(value: str | None) -> datetime | None:
+    """Read Ollama's RFC 3339 `expires_at`, or return `None` when it is missing or unreadable.
+
+    A time the tray cannot read only hides the unload text. It must not fail the whole poll.
+    A time with no zone offset is also unknown, because it cannot be compared with the clock.
+    """
+    if value is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+        return None if parsed.tzinfo is None else parsed.astimezone(UTC)
+    # The server can send a non-string, which raises `TypeError`. A far-future time shifted
+    # to UTC can overflow.
+    except (ValueError, TypeError, OverflowError):
+        return None
 
 
 def resolve_host(flag: str | None) -> str:
@@ -86,7 +107,11 @@ class OllamaClient:
         try:
             body: _PsPayload = json.loads(raw)
             return [
-                LoadedModel(name=str(entry["name"]), size_vram=int(entry["size_vram"]))
+                LoadedModel(
+                    name=str(entry["name"]),
+                    size_vram=int(entry["size_vram"]),
+                    expires_at=parse_expiry(entry.get("expires_at")),
+                )
                 for entry in body["models"]
             ]
         except (ValueError, KeyError, TypeError) as error:

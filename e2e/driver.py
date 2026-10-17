@@ -158,9 +158,10 @@ class Ollama:
         # The first run downloads the model, so this waits much longer than the other calls.
         self._request("/api/pull", {"model": model, "stream": False}, seconds=900)
 
-    def load(self, model: str) -> None:
-        # A generate call with no prompt only loads the model.
-        self._request("/api/generate", {"model": model, "keep_alive": "5m"}, seconds=300)
+    def load(self, model: str, keep_alive: str | int = "5m") -> None:
+        # A generate call with no prompt only loads the model, or changes the keep-alive of one
+        # that is already loaded.
+        self._request("/api/generate", {"model": model, "keep_alive": keep_alive}, seconds=300)
 
     def unload(self, model: str) -> None:
         self._request("/api/generate", {"model": model, "keep_alive": 0}, seconds=60)
