@@ -39,6 +39,12 @@
             ];
 
             nativeBuildInputs = [ pkgs.qt6.wrapQtAppsHook ];
+            # wrapQtAppsHook reads the plugin path from qtbase; qtwayland adds the
+            # Wayland platform plugin for Wayland sessions.
+            buildInputs = [
+              pkgs.qt6.qtbase
+              pkgs.qt6.qtwayland
+            ];
             # The Python wrapper is built by the Python hooks, so hand the Qt wrapper
             # arguments to it instead of letting wrapQtAppsHook wrap the script twice.
             dontWrapQtApps = true;
