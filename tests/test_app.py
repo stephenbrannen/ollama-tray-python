@@ -1,4 +1,4 @@
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
@@ -23,6 +23,15 @@ def qapp() -> Iterator[QApplication]:
     app = QApplication.instance() or QApplication([])
     assert isinstance(app, QApplication)
     yield app
+
+
+def wait_for(condition: Callable[[], bool], timeout_milliseconds: int) -> bool:
+    """Pump the event loop until the worker's queued signals have been delivered."""
+    waited = 0
+    while not condition() and waited < timeout_milliseconds:
+        QTest.qWait(10)
+        waited += 10
+    return condition()
 
 
 def labels(menu: QMenu) -> list[str]:
@@ -131,11 +140,10 @@ def test_refresh_applies_worker_result_on_gui_thread(
 
     controller.refresh()
     controller.refresh()
-    controller._pool.waitForDone()
-    QTest.qWait(50)
+    expected = f"{host}\nllama3:8b (4.7 GB VRAM)"
 
+    assert wait_for(lambda: controller._tray.toolTip() == expected, 2000)
     assert len(responses.calls) == 1
-    assert controller._tray.toolTip() == f"{host}\nllama3:8b (4.7 GB VRAM)"
     assert labels(controller._menu) == ["Stop llama3:8b", "Refresh now", "Quit"]
 
 
@@ -149,13 +157,9 @@ def test_stop_failure_is_reported_and_status_refreshed(
     controller._tray.showMessage = MagicMock()
 
     controller.stop_models(["llama3:8b"])
-    controller._pool.waitForDone()
-    QTest.qWait(50)
-    controller._pool.waitForDone()
-    QTest.qWait(50)
 
+    assert wait_for(lambda: controller._tray.toolTip().endswith("No model loaded"), 2000)
     controller._tray.showMessage.assert_called_once()
-    assert controller._tray.toolTip() == f"{host}\nNo model loaded"
 
 
 @mark.parametrize(
@@ -199,10 +203,8 @@ def test_stop_all_continues_past_a_failure_and_reports_each(
     controller._tray.showMessage = MagicMock()
 
     controller.stop_models(["a", "b"])
-    for _ in range(2):
-        controller._pool.waitForDone()
-        QTest.qWait(50)
 
-    assert len(responses.calls) == 3
+    assert wait_for(lambda: len(responses.calls) == 3, 2000)
+    assert wait_for(lambda: controller._tray.showMessage.called, 2000)
     message = controller._tray.showMessage.call_args.args[1]
     assert message.startswith("a: ") and "b:" not in message
