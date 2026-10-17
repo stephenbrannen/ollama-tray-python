@@ -93,6 +93,10 @@ Or add it to a flake-based system configuration:
 }
 ```
 
+* `nix run github:...` builds against the nixpkgs pinned in this repository and downloads its own copy of every dependency.
+* `inputs.nixpkgs.follows = "nixpkgs"` makes the package share your system's nixpkgs, so it reuses your Python and PySide6 instead.
+* For a one-off run with your own nixpkgs, use `nix run --override-input nixpkgs nixpkgs github:stephenbrannen/ollama-tray-python`.
+* A shared nixpkgs must provide Python 3.13 and PySide6 6.x.
 * `nix flake update` refreshes the pinned nixpkgs.
 * GNOME needs the AppIndicator extension to show tray icons.
 
