@@ -16,8 +16,8 @@ from pytest import fixture
 
 APP = "/opt/app/bin/ollama-tray"
 WATCHER_SCRIPT = Path(__file__).with_name("watcher.py")
-# A short interval keeps each wait in the test to about one poll.
-APP_INTERVAL_SECONDS = "0.5"
+# The app's minimum interval keeps each wait in the test to about one poll.
+APP_INTERVAL_SECONDS = "1"
 STARTUP_SECONDS = 30
 # The tray talks to Ollama through a proxy inside the test container. Killing the proxy makes
 # the server unreachable without any access to the Docker API.
