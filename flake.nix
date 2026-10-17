@@ -83,8 +83,9 @@
             '';
 
             nativeBuildInputs = [ pkgs.qt6.wrapQtAppsHook ];
-            # wrapQtAppsHook reads the plugin path from qtbase. Since Qt 6.11, qtbase ships
-            # the Wayland platform plugin, so the 6.11 qtwayland package adds nothing here.
+            # wrapQtAppsHook reads the plugin path from qtbase. Since Qt 6.11, qtbase ships the
+            # Wayland platform plugin. The 6.11 qtwayland package holds compositor libraries and
+            # window decorations, and a tray icon with no windows uses neither.
             buildInputs = [ pkgs.qt6.qtbase ];
             # The Python wrapper is built by the Python hooks, so hand the Qt wrapper
             # arguments to it instead of letting wrapQtAppsHook wrap the script twice.

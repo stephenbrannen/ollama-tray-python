@@ -36,8 +36,8 @@ jobs:
 
   nix:
     runs-on: ubuntu-latest
-    # A cache miss compiles the trimmed PySide6, which took 10 minutes on 4 fast cores.
-    # The 4 runner cores are slower, so this leaves room for about 4 times that.
+    # A cache miss compiles the trimmed PySide6, which took 6 to 10 minutes on 4 fast cores.
+    # The runner has 4 slower cores, so this allows for a build several times slower.
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
