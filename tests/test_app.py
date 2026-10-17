@@ -135,8 +135,14 @@ def make_controller(qapp: QApplication) -> Iterator[MakeController]:
         (
             ["m" * 300],
             ["m" * 300],
-            [f"Stop {'m' * 117}...", "Keep loaded", "Refresh now", "Quit"],
-            [f"{'m' * 117}..."],
+            [f"Stop {'m' * 63}…", "Keep loaded", "Refresh now", "Quit"],
+            [f"{'m' * 63}…"],
+        ),
+        (
+            ["a\nb\x07c", "r&d\u202e:8b"],
+            ["a\nb\x07c", "r&d\u202e:8b"],
+            ["Stop a b c", "Stop r&&d :8b", "Stop all", "Keep loaded", "Refresh now", "Quit"],
+            ["a b c", "r&&d :8b"],
         ),
     ],
     ids=[
@@ -146,6 +152,7 @@ def make_controller(qapp: QApplication) -> Iterator[MakeController]:
         "one-of-two-keepable",
         "ampersand-doubled",
         "long-name-capped",
+        "control-and-format-characters",
     ],
 )
 def test_populate_menu_lists_stop_actions_and_keep_loaded_submenu(
@@ -632,7 +639,8 @@ def test_stop_failure_message_is_escaped_and_capped(
     assert wait_for(lambda: show_message.called)
     message = show_message.call_args.args[1]
     assert message.startswith("a: &lt;a href=&quot;x&quot;&gt;click&lt;/a&gt;xxx")
-    assert message.endswith("xxx...")
+    assert message.endswith("xxx…")
+    assert len(message) < 400
     assert "<" not in message
 
 

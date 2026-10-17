@@ -23,11 +23,13 @@ from ollama_tray.client import (
     resolve_host,
 )
 from ollama_tray.status import (
+    MAX_ERROR_CHARACTERS,
+    MAX_NAME_CHARACTERS,
     TrayStatus,
-    escape_lines,
+    failure_line,
     is_kept_loaded,
     menu_label_text,
-    shorten,
+    plain_line,
     status_from_result,
     tooltip_text,
     utc_now,
@@ -278,8 +280,12 @@ class TrayController(QObject):
                 # Catch everything, not only `OllamaUnavailable`. One model's failure must not
                 # skip the models after it or end the worker thread.
                 except Exception as error:
-                    logger.warning("Could not stop %s: %s", shorten(name), shorten(str(error)))
-                    failures.append(f"{name}: {error}")
+                    logger.warning(
+                        "Could not stop %s: %s",
+                        plain_line(name, MAX_NAME_CHARACTERS),
+                        plain_line(str(error), MAX_ERROR_CHARACTERS),
+                    )
+                    failures.append(failure_line(name, str(error)))
         finally:
             # The names must always be released, or those models could never be stopped again.
             if failures:
@@ -301,8 +307,12 @@ class TrayController(QObject):
                 self._client.keep_loaded(name)
             # Catch everything, not only `OllamaUnavailable`, so the worker thread survives.
             except Exception as error:
-                logger.warning("Could not keep %s loaded: %s", shorten(name), shorten(str(error)))
-                self._keep_signals.failed.emit(f"{name}: {error}")
+                logger.warning(
+                    "Could not keep %s loaded: %s",
+                    plain_line(name, MAX_NAME_CHARACTERS),
+                    plain_line(str(error), MAX_ERROR_CHARACTERS),
+                )
+                self._keep_signals.failed.emit(failure_line(name, str(error)))
         finally:
             # The name must always be released, or that model could never be kept again.
             self._keep_signals.finished.emit(name)
@@ -326,7 +336,11 @@ class TrayController(QObject):
             return
         self._unreachable = unreachable
         if isinstance(result, OllamaUnavailable):
-            logger.warning("Server %s is unreachable: %s", self._host, shorten(str(result)))
+            logger.warning(
+                "Server %s is unreachable: %s",
+                self._host,
+                plain_line(str(result), MAX_ERROR_CHARACTERS),
+            )
         else:
             logger.info("Server %s is reachable again", self._host)
 
@@ -408,9 +422,7 @@ class TrayController(QObject):
 
     @Slot(str)
     def _on_stop_failed(self, message: str) -> None:
-        self._tray.showMessage(
-            "Could not stop model", escape_lines(message), QSystemTrayIcon.MessageIcon.Warning
-        )
+        self._tray.showMessage("Could not stop model", message, QSystemTrayIcon.MessageIcon.Warning)
 
     @Slot(list)
     def _on_stop_finished(self, names: list[str]) -> None:
@@ -421,7 +433,7 @@ class TrayController(QObject):
     def _on_keep_failed(self, message: str) -> None:
         self._tray.showMessage(
             "Could not keep model loaded",
-            escape_lines(message),
+            message,
             QSystemTrayIcon.MessageIcon.Warning,
         )
 
