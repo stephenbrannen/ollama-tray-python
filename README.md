@@ -136,6 +136,13 @@ uv run pre-commit install
 
 The pre-commit hooks run ruff and pyrefly on every commit.
 
+### Project standards
+
+The repository uses Ruff, Pyrefly, pytest and pre-commit, with two accepted deviations from the usual Python standards.
+
+* uv replaces Poetry, and the build backend is `hatchling`, uv's default. The Nix development shell provides Python and uv, so Poetry would add a second tool for no gain.
+* Runtime dependencies use a floor plus a major cap (`requests>=2.31,<3`), not `~=`. The Nix package resolves them against nixpkgs, not `uv.lock`, so a tight range would make the Nix build fail whenever nixpkgs lags.
+
 ### End-to-end test
 
 ```sh
