@@ -52,6 +52,12 @@ STATUS_COLORS = {
 # Past this point the GUI stops waiting and shows the server as not responding.
 POLL_WATCHDOG_MARGIN_SECONDS = 1
 NOT_RESPONDING = "not responding"
+# Stop all unloads this many models at once, as the Go tray does. It then takes about one
+# unload timeout, not one per model, and still opens a bounded number of connections.
+MAX_CONCURRENT_UNLOADS = 8
+
+# A job runs on a worker thread and gets that thread's own client.
+_Job = Callable[[OllamaClient], None]
 
 
 def draw_icon(status: TrayStatus) -> QIcon:
@@ -132,13 +138,15 @@ class _KeepSignals(QObject):
 class TrayController(QObject):
     """Own the tray icon, its menu and the poll loop.
 
-    All client calls run on one worker thread. The worker reports back through signals, so the
-    GUI thread is the only one that changes the icon, the tooltip and the menu.
+    Polls run on one worker thread and menu actions on another, so a poll never waits behind
+    a slow stop. Stop all unloads its models on short-lived threads, at most
+    `MAX_CONCURRENT_UNLOADS` at once. Workers report back through signals, so the GUI thread
+    is the only one that changes the icon, the tooltip and the menu.
     """
 
     def __init__(
         self,
-        client: OllamaClient,
+        make_client: Callable[[], OllamaClient],
         host: str,
         interval_seconds: float,
         tray: QSystemTrayIcon | None = None,
@@ -146,11 +154,14 @@ class TrayController(QObject):
     ) -> None:
         """Build the controller. A test passes its own `tray` and `menu` to observe them.
 
+        `make_client` must return a new client on every call. A `requests.Session` is not
+        guaranteed thread-safe, so every thread that calls the server gets its own client.
+
         A `QSystemTrayIcon` and a `QMenu` need the application to exist, so the defaults are
         created here, not in the signature.
         """
         super().__init__()
-        self._client = client
+        self._make_client = make_client
         self._host = host
         self._models: list[LoadedModel] = []
         self._menu_key: tuple[tuple[str, ...], tuple[str, ...]] | None = None
@@ -169,13 +180,20 @@ class TrayController(QObject):
         # A `QPixmap` needs the application to exist, so the icons are drawn here, not at import.
         self._icons = {status: draw_icon(status) for status in TrayStatus}
 
-        # The client's `requests.Session` is not guaranteed thread-safe. One worker thread makes
-        # every client call (poll, stop and keep loaded), so calls run one at a time.
-        self._jobs: queue.Queue[Callable[[], None] | None] = queue.Queue()
+        self._poll_jobs: queue.Queue[_Job | None] = queue.Queue()
+        # Actions run one at a time, in the order the user chose them.
+        self._action_jobs: queue.Queue[_Job | None] = queue.Queue()
         # A daemon thread cannot hold the process open while it waits on a hung server. Qt's
-        # `QThreadPool` joins its threads on exit, which delayed quitting by 10 s.
-        self._worker = threading.Thread(target=self._work, name="ollama-client", daemon=True)
-        self._worker.start()
+        # `QThreadPool` and `ThreadPoolExecutor` join their threads on exit, which delays quitting.
+        self._workers = tuple(
+            threading.Thread(target=self._work, args=(jobs, make_client()), name=name, daemon=True)
+            for jobs, name in (
+                (self._poll_jobs, "ollama-poll"),
+                (self._action_jobs, "ollama-action"),
+            )
+        )
+        for worker in self._workers:
+            worker.start()
 
         # Signals are emitted on the worker thread, and Qt queues them onto the GUI thread
         # through slots on this object. Only the GUI thread may touch widgets.
@@ -205,8 +223,8 @@ class TrayController(QObject):
         self.apply_result(None)
 
     @property
-    def worker_thread(self) -> threading.Thread:
-        return self._worker
+    def worker_threads(self) -> tuple[threading.Thread, ...]:
+        return self._workers
 
     def start(self) -> None:
         self._tray.show()
@@ -216,24 +234,25 @@ class TrayController(QObject):
     def shutdown(self) -> None:
         """Stop all work without waiting on the server.
 
-        A call that is already in flight ends on its own deadline. The worker thread is not
+        A call that is already in flight ends on its own deadline. No worker thread is
         joined here, so a hung server cannot delay quitting.
         """
         self._shutting_down.set()
         self._timer.stop()
         self._watchdog.stop()
-        while True:
-            try:
-                self._jobs.get_nowait()
-            except queue.Empty:
-                break
-        self._jobs.put(None)
+        for jobs in (self._poll_jobs, self._action_jobs):
+            while True:
+                try:
+                    jobs.get_nowait()
+                except queue.Empty:
+                    break
+            jobs.put(None)
         self._tray.hide()
 
-    def _work(self) -> None:
-        while (job := self._jobs.get()) is not None:
+    def _work(self, jobs: queue.Queue[_Job | None], client: OllamaClient) -> None:
+        while (job := jobs.get()) is not None:
             try:
-                job()
+                job(client)
             # A job that raises must not end this thread. Every later poll and stop would then
             # wait in the queue forever, and the icon would freeze.
             except Exception:
@@ -245,14 +264,13 @@ class TrayController(QObject):
         if self._poll_in_flight or self._shutting_down.is_set():
             return
         self._poll_in_flight = True
-        self._jobs.put(self._poll)
+        self._poll_jobs.put(self._poll)
 
-    def _poll(self) -> None:
-        # The watchdog times the call, not the queue wait. A poll can queue behind a slow stop,
-        # and a healthy server must not show as not responding.
+    def _poll(self, client: OllamaClient) -> None:
+        # The watchdog times the call, not the wait for the worker to pick the job up.
         self._poll_signals.started.emit()
         try:
-            models = self._client.loaded_models()
+            models = client.loaded_models()
         # Catch everything, not only `OllamaUnavailable`. A failure that emits no signal leaves
         # the in-flight flag set, and every later poll is then skipped.
         except Exception as error:
@@ -266,30 +284,59 @@ class TrayController(QObject):
         if not new_names or self._shutting_down.is_set():
             return
         self._unloading.update(new_names)
-        self._jobs.put(lambda: self._unload_all(new_names))
+        # The batch builds a client per unload thread, so the worker's own client is not used.
+        self._action_jobs.put(lambda _client: self._unload_all(new_names))
 
     def _unload_all(self, names: list[str]) -> None:
-        failures = []
-        try:
-            for name in names:
-                # Each unload can wait out its timeout, so quitting must be noticed between models.
-                if self._shutting_down.is_set():
-                    return
+        """Unload `names` on up to `MAX_CONCURRENT_UNLOADS` threads, then report once.
+
+        Each thread takes the next name from a shared queue until none are left. Each failure
+        is stored at its name's index, so the one notification lists them in menu order.
+        """
+        failures: list[str | None] = [None] * len(names)
+        pending: queue.SimpleQueue[int] = queue.SimpleQueue()
+        for index in range(len(names)):
+            pending.put(index)
+
+        def unload_pending(client: OllamaClient) -> None:
+            # Each unload can wait out its timeout, so quitting must be noticed between models.
+            while not self._shutting_down.is_set():
                 try:
-                    self._client.unload(name)
+                    index = pending.get_nowait()
+                except queue.Empty:
+                    return
+                name = names[index]
+                try:
+                    client.unload(name)
                 # Catch everything, not only `OllamaUnavailable`. One model's failure must not
-                # skip the models after it or end the worker thread.
+                # skip the models after it or end the thread.
                 except Exception as error:
                     logger.warning(
                         "Could not stop %s: %s",
                         plain_line(name, MAX_NAME_CHARACTERS),
                         plain_line(str(error), MAX_ERROR_CHARACTERS),
                     )
-                    failures.append(failure_line(name, str(error)))
+                    failures[index] = failure_line(name, str(error))
+
+        try:
+            threads = [
+                threading.Thread(
+                    target=unload_pending,
+                    args=(self._make_client(),),
+                    name="ollama-unload",
+                    daemon=True,
+                )
+                for _ in range(min(MAX_CONCURRENT_UNLOADS, len(names)))
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
         finally:
             # The names must always be released, or those models could never be stopped again.
-            if failures:
-                self._stop_signals.failed.emit("\n".join(failures))
+            messages = [failure for failure in failures if failure is not None]
+            if messages:
+                self._stop_signals.failed.emit("\n".join(messages))
             self._stop_signals.finished.emit(names)
 
     def keep_loaded(self, name: str) -> None:
@@ -297,14 +344,14 @@ class TrayController(QObject):
         if name in self._keeping or self._shutting_down.is_set():
             return
         self._keeping.add(name)
-        self._jobs.put(lambda: self._keep_one_loaded(name))
+        self._action_jobs.put(lambda client: self._keep_one_loaded(client, name))
 
-    def _keep_one_loaded(self, name: str) -> None:
+    def _keep_one_loaded(self, client: OllamaClient, name: str) -> None:
         try:
             if self._shutting_down.is_set():
                 return
             try:
-                self._client.keep_loaded(name)
+                client.keep_loaded(name)
             # Catch everything, not only `OllamaUnavailable`, so the worker thread survives.
             except Exception as error:
                 logger.warning(
@@ -523,7 +570,7 @@ def main() -> None:
             "No system tray found. On GNOME, install and enable the AppIndicator extension."
         )
 
-    controller = TrayController(OllamaClient(host), host, args.interval)
+    controller = TrayController(lambda: OllamaClient(host), host, args.interval)
     app.aboutToQuit.connect(controller.shutdown)
     quit_on_signals(app)
     controller.start()

@@ -16,7 +16,7 @@ Right-click the icon.
 
 * `Stop <model>`: unloads that model. One entry per loaded model.
 * `Keep loaded` > `<model>`: keeps that model loaded until you stop it, without changing the server's keep-alive setting. Lists the models that are not already kept loaded, and is hidden when there are none.
-* `Stop all`: unloads every loaded model. Shown when two or more are loaded.
+* `Stop all`: unloads every loaded model, up to 8 at once. Shown when two or more are loaded.
 * `Refresh now`: checks the server immediately.
 * `Quit`: exits.
 
@@ -175,4 +175,4 @@ Modules in `src/ollama_tray/`:
 
 * `client.py`: the Ollama HTTP client and `resolve_host`. No GUI code.
 * `status.py`: maps a client result to a status, tooltip text (with the time until each model unloads) and escaped text. No GUI code.
-* `app.py`: the tray icon, menu, worker thread and command line.
+* `app.py`: the tray icon, menu, worker threads and command line.
