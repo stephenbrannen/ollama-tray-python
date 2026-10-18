@@ -661,18 +661,18 @@ def test_poll_completes_while_a_slow_action_is_in_flight(
     assert client.kept == []
 
 
+@patch.object(QSystemTrayIcon, "showMessage")
 def test_stop_all_unloads_models_concurrently_and_reports_failures_once(
-    qapp: QApplication, make_controller: MakeController
+    show_message: MagicMock, make_controller: MakeController
 ) -> None:
     server = ConcurrentServer(failing={"a", "c"})
-    controller, tray, _menu = make_controller(lambda: ConcurrentClient(server), 5)
+    controller, _tray, _menu = make_controller(lambda: ConcurrentClient(server), 5)
 
-    with patch.object(tray, "showMessage") as show_message:
-        controller.stop_models(["a", "b", "c"])
-        assert wait_for(lambda: len(server.in_flight) == 3)
-        server.release.set()
+    controller.stop_models(["a", "b", "c"])
+    assert wait_for(lambda: len(server.in_flight) == 3)
+    server.release.set()
 
-        assert wait_for(lambda: show_message.called)
+    assert wait_for(lambda: show_message.called)
     assert len(server.clients) == 3
     assert show_message.call_count == 1
     assert show_message.call_args.args[1] == "a: busy\nc: busy"
