@@ -598,17 +598,22 @@ def test_duplicate_stop_is_ignored_while_unload_is_in_flight(harness: Harness) -
     assert wait_for(lambda: client.unloaded == ["a", "b", "a"])
 
 
-def test_stop_finishing_during_a_poll_queues_exactly_one_follow_up_poll(harness: Harness) -> None:
+@patch.object(QSystemTrayIcon, "showMessage")
+def test_stop_finishing_during_a_poll_queues_exactly_one_follow_up_poll(
+    show_message: MagicMock, harness: Harness
+) -> None:
     controller, client, _tray, _menu = harness
     client.block_polls = True
+    client.keep_error = RuntimeError("boom")
     controller.refresh()
     assert client.poll_started.wait(2)
 
     controller.stop_models(["a"])
     controller.stop_models(["b"])
-    # The stops must be released on the GUI thread while the poll is still held. `QTest.qWait`
-    # can hold the GIL, so a fixed wait does not let the worker reach its finished signal.
-    assert wait_for(lambda: client.unloaded == ["a", "b"] and not controller._unloading)
+    # Actions run in order, and Qt delivers queued signals in order. So once the failed keep
+    # loaded is shown, both stops' finished signals have reached the GUI thread.
+    controller.keep_loaded("c")
+    assert wait_for(lambda: show_message.called)
     client.gate.set()
 
     assert wait_for(lambda: client.polls == 2)
