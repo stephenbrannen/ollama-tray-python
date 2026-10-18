@@ -100,8 +100,8 @@ def resolve_host(flag: str | None) -> str:
 class OllamaClient:
     def __init__(self, base_url: str) -> None:
         self._base_url = base_url.rstrip("/")
-        # `requests.Session` is not guaranteed thread-safe. The tray calls this client from one
-        # worker thread only, so the session can keep its connection open between polls.
+        # `requests.Session` is not guaranteed thread-safe, so the tray gives each thread its
+        # own client. The poll thread's session keeps its connection open between polls.
         self._session = requests.Session()
 
     def loaded_models(self) -> list[LoadedModel]:

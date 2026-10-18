@@ -4,7 +4,8 @@ import sys
 import time
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
-from threading import Event
+from threading import Event, Lock
+from threading import enumerate as running_threads
 from typing import NamedTuple
 from unittest.mock import MagicMock, call, patch
 
@@ -12,9 +13,10 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 from pytest import CaptureFixture, LogCaptureFixture, MonkeyPatch, fixture, mark, raises
-from responses import RequestsMock
+from responses import RequestsMock, matchers
 
 from ollama_tray.app import (
+    MAX_CONCURRENT_UNLOADS,
     MenuActions,
     TrayController,
     draw_icon,
@@ -90,23 +92,32 @@ class Built(NamedTuple):
     menu: QMenu
 
 
-MakeController = Callable[[OllamaClient, float], Built]
+MakeController = Callable[[Callable[[], OllamaClient], float], Built]
+
+
+def real_client() -> OllamaClient:
+    return OllamaClient(HOST)
+
+
+def join_workers(controller: TrayController) -> None:
+    for worker in controller.worker_threads:
+        worker.join(2)
 
 
 @fixture
 def make_controller(qapp: QApplication) -> Iterator[MakeController]:
     controllers: list[TrayController] = []
 
-    def make(client: OllamaClient, interval_seconds: float) -> Built:
+    def make(make_client: Callable[[], OllamaClient], interval_seconds: float) -> Built:
         tray, menu = QSystemTrayIcon(), QMenu()
-        controller = TrayController(client, HOST, interval_seconds, tray, menu)
+        controller = TrayController(make_client, HOST, interval_seconds, tray, menu)
         controllers.append(controller)
         return Built(controller, tray, menu)
 
     yield make
     for controller in controllers:
         controller.shutdown()
-        controller.worker_thread.join(2)
+        join_workers(controller)
 
 
 @mark.parametrize(
@@ -207,7 +218,7 @@ def test_populate_menu_actions_call_their_callbacks(
 
 
 def test_apply_result_updates_tooltip_and_menu(make_controller: MakeController) -> None:
-    controller, tray, menu = make_controller(OllamaClient(HOST), 5)
+    controller, tray, menu = make_controller(real_client, 5)
 
     assert tray.toolTip() == f"{HOST}\nChecking..."
     assert icon_color(tray) == GREY
@@ -256,7 +267,7 @@ def test_refresh_applies_worker_result_on_gui_thread(
             ]
         },
     )
-    controller, tray, menu = make_controller(OllamaClient(HOST), 5)
+    controller, tray, menu = make_controller(real_client, 5)
 
     controller.refresh()
     controller.refresh()
@@ -271,7 +282,7 @@ def test_refresh_applies_worker_result_on_gui_thread(
 def test_poll_recovers_after_unexpected_error(
     loaded_models: MagicMock, make_controller: MakeController
 ) -> None:
-    controller, tray, _menu = make_controller(OllamaClient(HOST), 5)
+    controller, tray, _menu = make_controller(real_client, 5)
 
     controller.refresh()
     assert wait_for(lambda: tray.toolTip().endswith("Unreachable: bug"))
@@ -287,7 +298,7 @@ def test_stop_failure_is_reported_and_status_refreshed(
 ) -> None:
     responses.post(f"{HOST}/api/generate", status=500)
     responses.get(f"{HOST}/api/ps", json={"models": []})
-    controller, tray, _menu = make_controller(OllamaClient(HOST), 5)
+    controller, tray, _menu = make_controller(real_client, 5)
 
     controller.stop_models(["llama3:8b"])
 
@@ -374,7 +385,9 @@ def test_main_starts_controller_and_exits_with_event_loop_code(
 
     assert exit_info.value.code == 3
     controller_class.assert_called_once()
-    assert controller_class.call_args.args[1:] == ("http://gpu-box:8080", 7.0)
+    make_client, *rest = controller_class.call_args.args
+    assert rest == ["http://gpu-box:8080", 7.0]
+    assert make_client() is not make_client()
     controller = controller_class.return_value
     app.return_value.aboutToQuit.connect.assert_called_once_with(controller.shutdown)
     quit_on_signals_mock.assert_called_once_with(app.return_value)
@@ -385,10 +398,14 @@ def test_main_starts_controller_and_exits_with_event_loop_code(
 def test_stop_all_continues_past_a_failure_and_reports_each(
     show_message: MagicMock, make_controller: MakeController, responses: RequestsMock
 ) -> None:
-    responses.post(f"{HOST}/api/generate", status=500)
-    responses.post(f"{HOST}/api/generate", status=200)
+    for name, status in (("a", 500), ("b", 200)):
+        responses.post(
+            f"{HOST}/api/generate",
+            status=status,
+            match=[matchers.json_params_matcher({"model": name, "keep_alive": 0})],
+        )
     responses.get(f"{HOST}/api/ps", json={"models": []})
-    controller, _tray, _menu = make_controller(OllamaClient(HOST), 5)
+    controller, _tray, _menu = make_controller(real_client, 5)
 
     controller.stop_models(["a", "b"])
 
@@ -413,12 +430,15 @@ class StubClient(OllamaClient):
         self.keep_started = Event()
         self.kept: list[str] = []
         self.unload_started = Event()
+        self.blocked_unloads: list[str] = []
+        self.poll_started = Event()
         self.polls = 0
         self.unloaded: list[str] = []
         self.models: list[LoadedModel] = []
 
     def loaded_models(self) -> list[LoadedModel]:
         self.polls += 1
+        self.poll_started.set()
         if self.block_polls:
             self.gate.wait()
         return self.models
@@ -428,6 +448,7 @@ class StubClient(OllamaClient):
         if self.unload_error:
             raise self.unload_error
         if self.block_unloads:
+            self.blocked_unloads.append(name)
             self.gate.wait()
         self.unloaded.append(name)
 
@@ -440,6 +461,36 @@ class StubClient(OllamaClient):
         self.kept.append(name)
 
 
+class ConcurrentServer:
+    """State shared by every `ConcurrentClient` a factory builds, so a test sees all threads."""
+
+    def __init__(self, failing: set[str]) -> None:
+        self.failing = failing
+        self.release = Event()
+        self.lock = Lock()
+        self.in_flight: list[str] = []
+        self.clients: set[int] = set()
+
+
+class ConcurrentClient(OllamaClient):
+    """Holds every unload until the test releases them together."""
+
+    def __init__(self, server: ConcurrentServer) -> None:
+        super().__init__(HOST)
+        self.server = server
+
+    def loaded_models(self) -> list[LoadedModel]:
+        return []
+
+    def unload(self, name: str) -> None:
+        with self.server.lock:
+            self.server.in_flight.append(name)
+            self.server.clients.add(id(self))
+        self.server.release.wait()
+        if name in self.server.failing:
+            raise OllamaUnavailable("busy")
+
+
 class Harness(NamedTuple):
     controller: TrayController
     client: StubClient
@@ -450,7 +501,7 @@ class Harness(NamedTuple):
 @fixture
 def harness(make_controller: MakeController) -> Iterator[Harness]:
     client = StubClient()
-    controller, tray, menu = make_controller(client, 0.01)
+    controller, tray, menu = make_controller(lambda: client, 0.01)
     yield Harness(controller, client, tray, menu)
     client.gate.set()
 
@@ -466,7 +517,7 @@ def instant_watchdog(monkeypatch: MonkeyPatch) -> None:
 def test_watchdog_waits_for_the_client_deadline_plus_a_margin(
     set_interval: MagicMock, make_controller: MakeController
 ) -> None:
-    make_controller(StubClient(), 5)
+    make_controller(StubClient, 5)
 
     assert call(3000) in set_interval.call_args_list
 
@@ -486,40 +537,47 @@ def test_start_shows_tray_polls_and_keeps_polling_on_the_timer(
 
 @patch.object(QTimer, "stop")
 @patch.object(QSystemTrayIcon, "hide")
-def test_shutdown_returns_promptly_while_stop_all_is_hung(
+def test_shutdown_returns_promptly_while_a_poll_and_stop_all_are_hung(
     hide: MagicMock, timer_stop: MagicMock, harness: Harness
 ) -> None:
     controller, client, _tray, _menu = harness
     client.block_unloads = True
-    controller.stop_models(["a", "b"])
-    assert client.unload_started.wait(2)
+    client.block_polls = True
+    names = [f"m{index}" for index in range(MAX_CONCURRENT_UNLOADS + 1)]
+    controller.stop_models(names)
+    assert wait_for(lambda: len(client.blocked_unloads) == MAX_CONCURRENT_UNLOADS)
     controller.start()
+    assert client.poll_started.wait(2)
+    # Pumping the event loop above can deliver another controller's late signals.
+    timer_stop.reset_mock()
 
     started = time.monotonic()
     controller.shutdown()
     elapsed = time.monotonic() - started
+    hung_threads = [thread for thread in running_threads() if thread.name.startswith("ollama-")]
     client.gate.set()
-    controller.worker_thread.join(2)
+    join_workers(controller)
 
     assert elapsed < 1
-    assert controller.worker_thread.daemon
-    assert client.unloaded == ["a"]
+    assert len(hung_threads) == MAX_CONCURRENT_UNLOADS + 2
+    assert all(thread.daemon for thread in hung_threads)
+    assert sorted(client.unloaded) == names[:MAX_CONCURRENT_UNLOADS]
     assert timer_stop.call_count == 2
     hide.assert_called_once_with()
 
 
-def test_shutdown_drops_queued_polls_and_refuses_new_work(harness: Harness) -> None:
+def test_shutdown_drops_queued_actions_and_refuses_new_work(harness: Harness) -> None:
     controller, client, _tray, _menu = harness
     client.block_unloads = True
     controller.stop_models(["a"])
     assert client.unload_started.wait(2)
-    controller.refresh()
+    controller.stop_models(["b"])
 
     controller.shutdown()
     controller.refresh()
-    controller.stop_models(["b"])
+    controller.stop_models(["c"])
     client.gate.set()
-    controller.worker_thread.join(2)
+    join_workers(controller)
 
     assert client.polls == 0
     assert client.unloaded == ["a"]
@@ -540,16 +598,26 @@ def test_duplicate_stop_is_ignored_while_unload_is_in_flight(harness: Harness) -
     assert wait_for(lambda: client.unloaded == ["a", "b", "a"])
 
 
-def test_stop_finishing_during_a_poll_queues_exactly_one_follow_up_poll(harness: Harness) -> None:
+@patch.object(QSystemTrayIcon, "showMessage")
+def test_stop_finishing_during_a_poll_queues_exactly_one_follow_up_poll(
+    show_message: MagicMock, harness: Harness
+) -> None:
     controller, client, _tray, _menu = harness
+    client.block_polls = True
+    client.keep_error = RuntimeError("boom")
+    controller.refresh()
+    assert client.poll_started.wait(2)
 
     controller.stop_models(["a"])
     controller.stop_models(["b"])
-    controller.refresh()
+    # Actions run in order, and Qt delivers queued signals in order. So once the failed keep
+    # loaded is shown, both stops' finished signals have reached the GUI thread.
+    controller.keep_loaded("c")
+    assert wait_for(lambda: show_message.called)
+    client.gate.set()
 
     assert wait_for(lambda: client.polls == 2)
     QTest.qWait(50)
-    assert client.unloaded == ["a", "b"]
     assert client.polls == 2
 
 
@@ -568,20 +636,46 @@ def test_poll_in_flight_past_the_deadline_shows_not_responding(
     assert wait_for(lambda: tray.toolTip().endswith("(4.7 GB VRAM)"))
 
 
-def test_poll_queued_behind_a_slow_stop_is_not_reported_as_not_responding(
-    instant_watchdog: None, harness: Harness
+@mark.parametrize(
+    "start_action",
+    [
+        lambda controller: controller.stop_models(["a"]),
+        lambda controller: controller.keep_loaded("a"),
+    ],
+    ids=["stop", "keep-loaded"],
+)
+def test_poll_completes_while_a_slow_action_is_in_flight(
+    harness: Harness, start_action: Callable[[TrayController], None]
 ) -> None:
     controller, client, tray, _menu = harness
     client.block_unloads = True
-    controller.stop_models(["a"])
-    assert client.unload_started.wait(2)
+    client.block_keeps = True
+    client.models = [make_model("llama3:8b")]
+    start_action(controller)
+    assert wait_for(lambda: client.unload_started.is_set() or client.keep_started.is_set())
 
     controller.refresh()
-    QTest.qWait(100)
 
-    assert "not responding" not in tray.toolTip()
-    client.gate.set()
-    assert wait_for(lambda: tray.toolTip().endswith("No model loaded"))
+    assert wait_for(lambda: tray.toolTip().endswith("(4.7 GB VRAM)"))
+    assert client.unloaded == []
+    assert client.kept == []
+
+
+@patch.object(QSystemTrayIcon, "showMessage")
+def test_stop_all_unloads_models_concurrently_and_reports_failures_once(
+    show_message: MagicMock, make_controller: MakeController
+) -> None:
+    server = ConcurrentServer(failing={"a", "c"})
+    controller, _tray, _menu = make_controller(lambda: ConcurrentClient(server), 5)
+
+    controller.stop_models(["a", "b", "c"])
+    assert wait_for(lambda: len(server.in_flight) == 3)
+    server.release.set()
+
+    assert wait_for(lambda: show_message.called)
+    assert len(server.clients) == 3
+    assert show_message.call_count == 1
+    assert show_message.call_args.args[1] == "a: busy\nc: busy"
 
 
 @patch.object(QSystemTrayIcon, "showMessage")
@@ -698,7 +792,7 @@ def test_shutdown_refuses_keep_loaded_and_drops_a_queued_one(harness: Harness) -
     controller.shutdown()
     controller.keep_loaded("c")
     client.gate.set()
-    controller.worker_thread.join(2)
+    join_workers(controller)
 
     assert client.kept == []
 
