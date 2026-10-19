@@ -18,6 +18,8 @@
       systems = [
         "x86_64-linux"
         "aarch64-linux"
+        # nixpkgs 26.11 dropped x86_64-darwin, so Intel Macs install the release wheel instead.
+        "aarch64-darwin"
       ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
       # The package and the dev shell both read this name, so a flake.lock update that moves
@@ -29,6 +31,7 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
+          inherit (pkgs.stdenv.hostPlatform) isDarwin isLinux;
           pyproject = fromTOML (builtins.readFile ./pyproject.toml);
           pythonPackages = pkgs.${pythonAttr + "Packages"};
           # nixpkgs' pyside6 binds every Qt module, which makes the closure about 2.2 GiB.
@@ -42,7 +45,11 @@
               pythonPackages.ninja
               pythonPackages.packaging
               pythonPackages.setuptools
-            ];
+            ]
+            # On macOS, nixpkgs builds Qt against a pinned Apple SDK and minimum macOS version.
+            # The pyside6 expression adds the same inputs there, so the bindings match Qt.
+            # Its joined Qt tree is not needed here: qtbase alone holds every framework we bind.
+            ++ pkgs.lib.optionals isDarwin pkgs.qt6.darwinVersionInputs;
             # `MODULES` is a CMake option of the pyside6 source, not of nixpkgs.
             cmakeFlags = old.cmakeFlags ++ [ "-DMODULES=Core;Gui;Widgets;Test" ];
             # The generated bindings are large C++ files. With 18 parallel compile jobs, the
@@ -78,6 +85,7 @@
             ];
             pythonImportsCheck = [ "ollama_tray" ];
             # Qt needs a platform plugin to import QtWidgets, and the build sandbox has no display.
+            # qtbase builds the offscreen plugin on Linux and macOS alike.
             preCheck = ''
               export QT_QPA_PLATFORM=offscreen
             '';
@@ -86,6 +94,8 @@
             # wrapQtAppsHook reads the plugin path from qtbase. Since Qt 6.11, qtbase ships the
             # Wayland platform plugin. The 6.11 qtwayland package holds compositor libraries and
             # window decorations, and a tray icon with no windows uses neither.
+            # On macOS the same plugin path holds the `cocoa` platform plugin, which draws the
+            # menu bar icon.
             buildInputs = [ pkgs.qt6.qtbase ];
             # The Python wrapper is built by the Python hooks, so hand the Qt wrapper
             # arguments to it instead of letting wrapQtAppsHook wrap the script twice.
@@ -94,12 +104,17 @@
               makeWrapperArgs+=("''${qtWrapperArgs[@]}")
             '';
 
-            postInstall = ''
-              install -Dm644 ${./ollama-tray.desktop} $out/share/applications/ollama-tray.desktop
-              # Nix builds have no release tag, so `--version` reads the commit from this file.
-              printf '%s\n' '${self.shortRev or self.dirtyShortRev or "dirty"}' \
-                > $out/${pythonPackages.python.sitePackages}/ollama_tray/_build_version
-            '';
+            # Desktop entries are a freedesktop.org standard. macOS ignores them and starts
+            # programs at login through Login Items or launchd instead.
+            postInstall =
+              pkgs.lib.optionalString isLinux ''
+                install -Dm644 ${./ollama-tray.desktop} $out/share/applications/ollama-tray.desktop
+              ''
+              + ''
+                # Nix builds have no release tag, so `--version` reads the commit from this file.
+                printf '%s\n' '${self.shortRev or self.dirtyShortRev or "dirty"}' \
+                  > $out/${pythonPackages.python.sitePackages}/ollama_tray/_build_version
+              '';
 
             meta = {
               description = pyproject.project.description;
@@ -127,8 +142,9 @@
         let
           pkgs = nixpkgs.legacyPackages.${system};
           python = pkgs.${pythonAttr};
-          # The PySide6 wheels bundle Qt but link against these system libraries,
-          # which NixOS does not put on the default loader path.
+          # The Linux PySide6 wheels bundle Qt but link against these system libraries,
+          # which NixOS does not put on the default loader path. The macOS wheels link only
+          # system frameworks, so the shell sets no library path there.
           qtRuntimeLibs = with pkgs; [
             libGL
             fontconfig
@@ -154,17 +170,21 @@
           ];
         in
         {
-          default = pkgs.mkShell {
-            packages = [
-              python
-              pkgs.uv
-              pkgs.pre-commit
-            ];
-            # Use the Nix Python so uv does not download its own interpreter.
-            UV_PYTHON = "${python}/bin/python3";
-            UV_PYTHON_DOWNLOADS = "never";
-            LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath qtRuntimeLibs;
-          };
+          default = pkgs.mkShell (
+            {
+              packages = [
+                python
+                pkgs.uv
+                pkgs.pre-commit
+              ];
+              # Use the Nix Python so uv does not download its own interpreter.
+              UV_PYTHON = "${python}/bin/python3";
+              UV_PYTHON_DOWNLOADS = "never";
+            }
+            // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+              LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath qtRuntimeLibs;
+            }
+          );
         }
       );
 

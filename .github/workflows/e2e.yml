@@ -17,6 +17,8 @@ concurrency:
 
 jobs:
   e2e:
+    # The test drives the tray through a Linux tray host over D-Bus, inside Docker.
+    # macOS has no such host, and its GitHub runners have no Docker.
     runs-on: ubuntu-latest
     # Each run pulls the Ollama image and the model (about 270 MB), then builds the test image.
     timeout-minutes: 20
