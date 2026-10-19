@@ -130,7 +130,7 @@ nix run github:stephenbrannen/ollama-tray-python
 
 As on Linux, Nix downloads the prebuilt package from the `ollama-tray` Cachix cache. The first time, Nix asks whether to trust the cache settings in the flake. Answer `y`, or pass `--accept-flake-config`. If your user is not a trusted Nix user, Nix ignores the cache and compiles PySide6 first, which takes a long time.
 
-Or install the release wheel with uv. This needs no Nix, and it also works on Intel Macs, which the flake does not support:
+Or install the release wheel with uv, which needs no Nix. On an Intel Mac, use the wheel: the flake does not support Intel Macs, but the wheel is pure Python and runs on both.
 
 ```sh
 gh release download <tag> -R stephenbrannen/ollama-tray-python -p '*.whl' -p checksums.txt

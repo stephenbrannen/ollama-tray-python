@@ -18,8 +18,7 @@
       systems = [
         "x86_64-linux"
         "aarch64-linux"
-        # Intel Macs are left out: nixpkgs 26.11 dropped x86_64-darwin, and the release
-        # wheel still runs there.
+        # nixpkgs 26.11 dropped x86_64-darwin, so Intel Macs install the release wheel instead.
         "aarch64-darwin"
       ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
