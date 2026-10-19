@@ -1,8 +1,11 @@
 # ollama-tray-python
 
-A Linux system tray icon that shows which models an Ollama server has loaded, and unloads them on demand. Licensed under the [MIT License](LICENSE).
+A system tray icon for Linux and the macOS menu bar that shows which models an Ollama server has loaded, and unloads them on demand. Licensed under the [MIT License](LICENSE).
 
-Supported platforms: Linux on x86_64 and aarch64, on X11 or Wayland, with a desktop that shows tray icons. GNOME needs the AppIndicator extension.
+Supported platforms:
+
+* Linux on x86_64 and aarch64, on X11 or Wayland, with a desktop that shows tray icons. GNOME needs the AppIndicator extension.
+* macOS on Apple silicon, in the menu bar. See [Install on macOS](#install-on-macos).
 
 ## Icon colors
 
@@ -109,11 +112,66 @@ Or add it to a flake-based system configuration:
   };
   ```
 
-* The cache is public, so anyone can download its contents. It holds only `x86_64-linux` builds made against this repository's pinned nixpkgs, so `aarch64-linux` and `inputs.nixpkgs.follows` builds still compile locally.
+* The cache is public, so anyone can download its contents. It holds only `x86_64-linux` and `aarch64-darwin` builds made against this repository's pinned nixpkgs, so `aarch64-linux` and `inputs.nixpkgs.follows` builds still compile locally.
 * The package builds its own PySide6 with only the Qt modules the app uses, which cuts the download from about 2.2 GiB to about 750 MiB. A build that misses the cache compiles PySide6, which takes 6 to 10 minutes on 4 cores. The build runs at most 4 compile jobs, because more can run out of memory on an 8 GiB machine.
 * The Nix package uses the Wayland support built into Qt 6.11. It still needs a manual check on GNOME and KDE Wayland desktops.
 * `nix flake update` refreshes the pinned nixpkgs.
 * GNOME needs the AppIndicator extension to show tray icons.
+
+## Install on macOS
+
+The tray runs on Apple silicon Macs and shows its icon in the menu bar. It needs an Ollama server, on the same Mac or reachable over the network.
+
+Try it with Nix:
+
+```sh
+nix run github:stephenbrannen/ollama-tray-python
+```
+
+As on Linux, Nix downloads the prebuilt package from the `ollama-tray` Cachix cache. The first time, Nix asks whether to trust the cache settings in the flake. Answer `y`, or pass `--accept-flake-config`. If your user is not a trusted Nix user, Nix ignores the cache and compiles PySide6 first, which takes a long time.
+
+Or install the release wheel with uv. This needs no Nix, and it also works on Intel Macs, which the flake does not support:
+
+```sh
+gh release download <tag> -R stephenbrannen/ollama-tray-python -p '*.whl' -p checksums.txt
+shasum -a 256 -c checksums.txt --ignore-missing
+uv tool install ./ollama_tray-<version>-py3-none-any.whl
+```
+
+`uv tool install` puts `ollama-tray` in `~/.local/bin`. See [Install from a release](#install-from-a-release) for the provenance check.
+
+### Start at login
+
+Either add the program in System Settings > General > Login Items, or create a LaunchAgent. A LaunchAgent can pass options and restarts the tray if it crashes. Save this as `~/Library/LaunchAgents/io.github.stephenbrannen.ollama-tray.plist`, and replace `YOU` with your user name:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>io.github.stephenbrannen.ollama-tray</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/YOU/.local/bin/ollama-tray</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>StandardErrorPath</key>
+  <string>/tmp/ollama-tray.log</string>
+</dict>
+</plist>
+```
+
+* launchd does not read your shell profile, so the path must be absolute. For a Nix profile install, use `/Users/YOU/.nix-profile/bin/ollama-tray`.
+* `KeepAlive` restarts the tray after a crash but not after you pick `Quit`.
+* Load it now with `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/io.github.stephenbrannen.ollama-tray.plist`. It also loads at every login.
+* Remove it with `launchctl bootout gui/$(id -u)/io.github.stephenbrannen.ollama-tray`, then delete the file.
 
 ## Install from a release
 
@@ -123,7 +181,7 @@ Each tagged release has a source archive (`ollama_tray-<version>.tar.gz`), a whe
 * Verify it with `sha256sum -c checksums.txt --ignore-missing`.
 * Verify its build provenance with `gh attestation verify <wheel> -R stephenbrannen/ollama-tray-python`. This proves the file came from this repository's release workflow. Releases get an attestation only while the repository is public.
 * Install it with `uv tool install ./ollama_tray-<version>-py3-none-any.whl`, or with `pipx install ./ollama_tray-<version>-py3-none-any.whl`.
-* Copy `ollama-tray.desktop` from the source archive to `~/.config/autostart/` to start the tray on login. It runs `ollama-tray` from your `PATH`.
+* On Linux, copy `ollama-tray.desktop` from the source archive to `~/.config/autostart/` to start the tray on login. It runs `ollama-tray` from your `PATH`. On macOS, see [Start at login](#start-at-login).
 * While the repository is private, only collaborators can download releases.
 
 ### Withdraw a bad release
@@ -169,7 +227,7 @@ The repository uses Ruff, Pyrefly, pytest and pre-commit, with two accepted devi
 e2e/run.sh
 ```
 
-This needs Docker with Compose. It starts a real Ollama server and a test container with Xvfb, a session D-Bus and a stub tray host. The test reads the icon, tooltip and menu over D-Bus the way a desktop panel does, clicks `Stop <model>`, and kills the TCP proxy (`socat`) between the tray and Ollama to show the unreachable state. The test container has no Docker socket. The first run downloads `smollm2:135m` into a Docker volume, and later runs reuse it. `uv run pytest` does not collect these tests.
+This needs Docker with Compose. It starts a real Ollama server and a test container with Xvfb, a session D-Bus and a stub tray host. The test reads the icon, tooltip and menu over D-Bus the way a desktop panel does, clicks `Stop <model>`, and kills the TCP proxy (`socat`) between the tray and Ollama to show the unreachable state. The test container has no Docker socket. The first run downloads `smollm2:135m` into a Docker volume, and later runs reuse it. `uv run pytest` does not collect these tests. The test runs on Linux only: it needs a Linux tray host on D-Bus, and the macOS GitHub runners have no Docker.
 
 Modules in `src/ollama_tray/`:
 
