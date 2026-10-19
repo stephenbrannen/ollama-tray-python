@@ -5,7 +5,7 @@ A system tray icon for Linux and the macOS menu bar that shows which models an O
 Supported platforms:
 
 * Linux on x86_64 and aarch64, on X11 or Wayland, with a desktop that shows tray icons. GNOME needs the AppIndicator extension.
-* macOS on Apple silicon, in the menu bar. See [Install on macOS](#install-on-macos).
+* macOS, in the menu bar. The Nix package needs Apple silicon; the release wheel also runs on Intel Macs. See [Install on macOS](#install-on-macos).
 
 ## Icon colors
 
